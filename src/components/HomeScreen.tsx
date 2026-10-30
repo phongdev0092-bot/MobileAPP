@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -13,6 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -45,14 +46,16 @@ type ActiveTab =
   | 'RESETMAC'
   | 'WEBVIEW';
 
-interface TrackedRequest {
+export interface TrackedRequest {
   id: string;
+  taskType: 'BYPASS' | 'CLEAR' | 'MYBAE' | 'MANUAL' | 'SPAM' | 'RESETMAC';
   taskName: string;
   shd: string;
   status: string;
   note?: string;
   pending: boolean;
   createdAt: string;
+  updatedAt?: string;
 }
 
 /**
@@ -75,6 +78,180 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [activeTab, setActiveTab] = useState<ActiveTab>('HOME');
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [history, setHistory] = useState<TrackedRequest[]>([]);
+  const [isRefreshingStatus, setIsRefreshingStatus] = useState<boolean>(false);
+  const historyRef = useRef<TrackedRequest[]>([]);
+  historyRef.current = history;
+
+  const storageKey = `@nextsu_ai_history_${profile.email.trim().toLowerCase()}`;
+
+  // Hàm chuyển loại tác vụ thành action kiểm tra trạng thái tương ứng trên Google Apps Script
+  const getStatusActionForTask = (taskType: string): string => {
+    switch (taskType) {
+      case 'BYPASS':
+        return 'bypassStatus';
+      case 'CLEAR':
+        return 'clearStatus';
+      case 'MYBAE':
+        return 'myBaeStatus';
+      case 'MANUAL':
+        return 'manualStatus';
+      case 'SPAM':
+        return 'spamStatus';
+      case 'RESETMAC':
+        return 'resetMacStatus';
+      default:
+        return 'bypassStatus';
+    }
+  };
+
+  // Cấu hình giao diện badge trạng thái (màu sắc, icon, văn bản)
+  const getStatusBadgeConfig = (item: TrackedRequest) => {
+    const s = String(item.status || '').toLowerCase().trim();
+    if (
+      s.includes('đã xử lý') ||
+      s.includes('hoàn tất') ||
+      s.includes('thành công') ||
+      s.includes('xong') ||
+      s.includes('chấp nhận') ||
+      (!item.pending && s !== 'chưa cập nhật' && s !== 'chưa xử lý' && s !== '')
+    ) {
+      return {
+        bg: '#DCFCE7',
+        border: '#86EFAC',
+        text: '#15803D',
+        icon: 'checkmark-circle' as const,
+        label: item.status || 'Đã xử lý',
+      };
+    }
+    if (
+      s.includes('từ chối') ||
+      s.includes('không hợp lệ') ||
+      s.includes('thất bại') ||
+      s.includes('hủy') ||
+      s.includes('lỗi')
+    ) {
+      return {
+        bg: '#FEE2E2',
+        border: '#FCA5A5',
+        text: '#B91C1C',
+        icon: 'close-circle' as const,
+        label: item.status || 'Từ chối',
+      };
+    }
+    return {
+      bg: '#FEF3C7',
+      border: '#FCD34D',
+      text: '#B45309',
+      icon: 'hourglass-outline' as const,
+      label: item.status || 'Chưa cập nhật',
+    };
+  };
+
+  // Kiểm tra trạng thái của một yêu cầu cụ thể trực tiếp từ Sheet
+  const checkSingleStatus = async (item: TrackedRequest): Promise<TrackedRequest> => {
+    try {
+      const action = getStatusActionForTask(item.taskType);
+      const res = await callAppsScriptJsonApi<any>({
+        action,
+        token,
+        id: item.id,
+        email: profile.email,
+      });
+
+      if (res && res.ok) {
+        const newStatus = String(res.status || '').trim();
+        const newNote = String(res.note || '').trim();
+        const newPending = typeof res.pending === 'boolean' ? res.pending : false;
+
+        return {
+          ...item,
+          status: newStatus || item.status,
+          note: newNote,
+          pending: newPending,
+          updatedAt: new Date().toLocaleTimeString('vi-VN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+          }),
+        };
+      }
+    } catch (e) {
+      console.warn('Lỗi kiểm tra trạng thái yêu cầu #' + item.id, e);
+    }
+    return item;
+  };
+
+  // Làm mới trạng thái của danh sách yêu cầu
+  const reloadAllStatuses = useCallback(
+    async (forceAll: boolean = false) => {
+      const currentList = historyRef.current;
+      if (currentList.length === 0) return;
+
+      setIsRefreshingStatus(true);
+      try {
+        let hasChanges = false;
+        const updatedList = await Promise.all(
+          currentList.map(async (item) => {
+            if (!forceAll && !item.pending) return item;
+            const updated = await checkSingleStatus(item);
+            if (
+              updated.status !== item.status ||
+              updated.pending !== item.pending ||
+              updated.note !== item.note
+            ) {
+              hasChanges = true;
+            }
+            return updated;
+          })
+        );
+
+        if (hasChanges || forceAll) {
+          setHistory(updatedList);
+          await AsyncStorage.setItem(storageKey, JSON.stringify(updatedList));
+        }
+      } catch (err) {
+        console.warn('Lỗi cập nhật danh sách yêu cầu:', err);
+      } finally {
+        setIsRefreshingStatus(false);
+      }
+    },
+    [token, profile.email, storageKey]
+  );
+
+  // Tải danh sách yêu cầu đã lưu từ AsyncStorage khi mở màn hình và tự làm mới ngay
+  useEffect(() => {
+    let active = true;
+    const loadHistory = async () => {
+      try {
+        const raw = await AsyncStorage.getItem(storageKey);
+        if (raw && active) {
+          const list: TrackedRequest[] = JSON.parse(raw);
+          setHistory(list);
+          historyRef.current = list;
+          // Ngay khi mở app, tự động kiểm tra lại trạng thái các yêu cầu
+          setTimeout(() => {
+            reloadAllStatuses(true);
+          }, 600);
+        }
+      } catch {}
+    };
+    loadHistory();
+    return () => {
+      active = false;
+    };
+  }, [storageKey, reloadAllStatuses]);
+
+  // Tự động kiểm tra định kỳ mỗi 5 giây khi có yêu cầu đang xử lý (pending = true)
+  useEffect(() => {
+    const hasPending = history.some((item) => item.pending);
+    if (!hasPending) return;
+
+    const interval = setInterval(() => {
+      reloadAllStatuses(false);
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [history, reloadAllStatuses]);
 
   // Form states dùng chung
   const [shd, setShd] = useState<string>('');
@@ -307,11 +484,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       return;
     }
 
+    const assignedId = String(
+      res?.id ||
+        (Array.isArray(res?.results) && res.results[0]?.id) ||
+        Math.floor(1000 + Math.random() * 9000)
+    );
+
     const newReq: TrackedRequest = {
-      id: String(res?.id || Math.floor(1000 + Math.random() * 9000)),
+      id: assignedId,
+      taskType: activeTab as any,
       taskName: taskLabel,
       shd: cleanShd,
-      status: res?.resumed ? 'Đang theo dõi tiếp' : 'Chưa cập nhật (Đang xử lý)',
+      status: res?.resumed ? 'Đang theo dõi tiếp' : 'Chưa cập nhật',
       pending: true,
       createdAt: new Date().toLocaleTimeString('vi-VN', {
         hour: '2-digit',
@@ -320,15 +504,28 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       }),
     };
 
-    setHistory((prev) => [newReq, ...prev]);
+    const nextHistory = [newReq, ...historyRef.current];
+    setHistory(nextHistory);
+    historyRef.current = nextHistory;
+    try {
+      await AsyncStorage.setItem(storageKey, JSON.stringify(nextHistory));
+    } catch {}
+
     setShd('');
     setAttachedImageBase64(null);
     setAttachedImageUri(null);
 
+    // Tự động quay về màn hình chính Home ngay lập tức
+    setActiveTab('HOME');
+
+    // Kích hoạt kiểm tra trạng thái ngay sau 1.5 giây
+    setTimeout(() => {
+      reloadAllStatuses(false);
+    }, 1500);
+
     Alert.alert(
-      'Đã gửi yêu cầu thành công',
-      `Tác vụ: ${taskLabel}\nSố HĐ: ${cleanShd}\nMã theo dõi: #${newReq.id}`,
-      [{ text: 'Đóng', onPress: () => setActiveTab('HOME') }]
+      'Gửi thành công',
+      `Tác vụ: ${taskLabel}\nSố HĐ: ${cleanShd}\nMã theo dõi: #${newReq.id}`
     );
   };
 
@@ -561,32 +758,111 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               </TouchableOpacity>
             </View>
 
-            {/* Lịch sử yêu cầu vừa gửi */}
-            <Text style={[styles.sectionTitle, { marginTop: 22 }]}>
-              YÊU CẦU VỪA GỬI TRONG PHIÊN ({history.length})
-            </Text>
+            {/* Lịch sử yêu cầu đã gửi (tự động cập nhật trực tiếp từ Sheet) */}
+            <View style={styles.historyHeaderRow}>
+              <Text style={styles.sectionTitle}>
+                YÊU CẦU ĐÃ GỬI ({history.length})
+              </Text>
+              <View style={styles.historyHeaderActions}>
+                <TouchableOpacity
+                  style={styles.refreshHistoryBtn}
+                  onPress={() => reloadAllStatuses(true)}
+                  disabled={isRefreshingStatus}
+                  activeOpacity={0.7}
+                >
+                  {isRefreshingStatus ? (
+                    <ActivityIndicator size="small" color="#0072FF" />
+                  ) : (
+                    <Ionicons name="refresh" size={14} color="#0072FF" />
+                  )}
+                  <Text style={styles.refreshHistoryBtnText}>
+                    {isRefreshingStatus ? 'Đang kiểm tra...' : 'Làm mới'}
+                  </Text>
+                </TouchableOpacity>
+
+                {history.length > 0 && (
+                  <TouchableOpacity
+                    style={styles.clearHistoryBtn}
+                    onPress={() => {
+                      Alert.alert(
+                        'Xóa danh sách?',
+                        'Bạn có chắc chắn muốn xóa danh sách yêu cầu hiển thị trên máy không?',
+                        [
+                          { text: 'Hủy', style: 'cancel' },
+                          {
+                            text: 'Xóa',
+                            style: 'destructive',
+                            onPress: async () => {
+                              setHistory([]);
+                              historyRef.current = [];
+                              try {
+                                await AsyncStorage.removeItem(storageKey);
+                              } catch {}
+                            },
+                          },
+                        ]
+                      );
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="trash-outline" size={15} color="#94A3B8" />
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+
             {history.length === 0 ? (
               <View style={styles.emptyHistoryBox}>
                 <Ionicons name="time-outline" size={28} color="#94A3B8" />
                 <Text style={styles.emptyHistoryText}>
-                  Chưa có yêu cầu nào được gửi trong phiên làm việc này.
+                  Chưa có yêu cầu nào được gửi trong hệ thống.
                 </Text>
               </View>
             ) : (
-              history.map((item, idx) => (
-                <View key={`${item.id}_${idx}`} style={styles.historyItem}>
-                  <View style={styles.historyLeft}>
-                    <Text style={styles.historyTask}>
-                      {item.taskName} • #{item.id}
-                    </Text>
-                    <Text style={styles.historyShd}>SHD: {item.shd}</Text>
-                    <Text style={styles.historyTime}>Lúc {item.createdAt}</Text>
+              history.map((item, idx) => {
+                const badge = getStatusBadgeConfig(item);
+                return (
+                  <View key={`${item.id}_${idx}`} style={styles.historyItem}>
+                    <View style={styles.historyLeft}>
+                      <Text style={styles.historyTask}>
+                        {item.taskName} • #{item.id}
+                      </Text>
+                      <Text style={styles.historyShd}>SHD: {item.shd}</Text>
+                      <Text style={styles.historyTime}>
+                        Gửi lúc: {item.createdAt}
+                        {item.updatedAt ? ` • Cập nhật: ${item.updatedAt}` : ''}
+                      </Text>
+                      {Boolean(item.note) && (
+                        <Text style={styles.historyNoteText}>
+                          Ghi chú: {item.note}
+                        </Text>
+                      )}
+                    </View>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.historyStatusBadge,
+                        {
+                          backgroundColor: badge.bg,
+                          borderColor: badge.border,
+                        },
+                      ]}
+                      onPress={() => reloadAllStatuses(true)}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name={badge.icon} size={14} color={badge.text} />
+                      <Text
+                        style={[
+                          styles.historyStatusText,
+                          { color: badge.text },
+                        ]}
+                      >
+                        {badge.label}
+                      </Text>
+                    </TouchableOpacity>
                   </View>
-                  <View style={styles.historyStatusBadge}>
-                    <Text style={styles.historyStatusText}>{item.status}</Text>
-                  </View>
-                </View>
-              ))
+                );
+              })
             )}
           </>
         ) : activeTab === 'SCHEDULE' ? (
@@ -1247,6 +1523,41 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
     marginTop: 2,
   },
+  historyHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 22,
+    marginBottom: 8,
+  },
+  historyHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  refreshHistoryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    gap: 5,
+  },
+  refreshHistoryBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0072FF',
+  },
+  clearHistoryBtn: {
+    backgroundColor: '#F1F5F9',
+    padding: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
   emptyHistoryBox: {
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
@@ -1274,6 +1585,7 @@ const styles = StyleSheet.create({
   },
   historyLeft: {
     flex: 1,
+    marginRight: 10,
   },
   historyTask: {
     fontSize: 14,
@@ -1291,15 +1603,23 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     marginTop: 2,
   },
+  historyNoteText: {
+    fontSize: 11.5,
+    color: '#0284C7',
+    fontWeight: '600',
+    marginTop: 3,
+  },
   historyStatusBadge: {
-    backgroundColor: '#FEF3C7',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
     paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingVertical: 6,
     borderRadius: 10,
   },
   historyStatusText: {
-    color: '#B45309',
-    fontSize: 11.5,
+    fontSize: 12,
     fontWeight: '700',
   },
   taskFormCard: {

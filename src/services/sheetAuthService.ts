@@ -132,9 +132,9 @@ export async function fetchEmployeeSheetRows(): Promise<string[][]> {
 }
 
 /**
- * Gọi JSON API tới Google Apps Script
+ * Gửi request JSON thô tới Google Apps Script
  */
-export async function callAppsScriptJsonApi<T = any>(
+async function postToAppsScriptRaw<T = any>(
   payload: Record<string, any>
 ): Promise<T | null> {
   try {
@@ -153,6 +153,105 @@ export async function callAppsScriptJsonApi<T = any>(
   } catch {
     return null;
   }
+}
+
+/**
+ * Tự động đồng bộ & lấy session token hợp lệ từ Google Apps Script
+ * nếu phiên hiện tại dùng token tạm (NEXTSU_...) hoặc đã hết hạn trên Server.
+ */
+async function refreshServerTokenIfNeeded(hintEmail?: string): Promise<string | null> {
+  try {
+    const rawSession = await AsyncStorage.getItem(STORAGE_SESSION_KEY);
+    const parsedSession = rawSession ? JSON.parse(rawSession) : null;
+    const email = String(
+      hintEmail || parsedSession?.profile?.email || ''
+    )
+      .trim()
+      .toLowerCase();
+    if (!email) return null;
+
+    const cachedPass =
+      parsedSession?.password ||
+      (await AsyncStorage.getItem(STORAGE_LOCAL_PASS_PREFIX + email)) ||
+      '';
+    if (!cachedPass) return null;
+
+    let authRes = await postToAppsScriptRaw<AuthResult>({
+      action: 'login',
+      email,
+      password: cachedPass,
+    });
+
+    // Nếu trên Sheet cột H chưa kịp lưu mật khẩu (do tạo khi chưa gắn URL mới), tự động ghi lên Sheet
+    if (authRes && authRes.needCreate) {
+      authRes = await postToAppsScriptRaw<AuthResult>({
+        action: 'setPassword',
+        email,
+        password: cachedPass,
+        confirm: cachedPass,
+      });
+    }
+
+    if (authRes && authRes.ok && authRes.token) {
+      const updatedSession = {
+        token: authRes.token,
+        profile: authRes.profile || parsedSession?.profile,
+        password: cachedPass,
+      };
+      await AsyncStorage.setItem(
+        STORAGE_SESSION_KEY,
+        JSON.stringify(updatedSession)
+      );
+      return authRes.token;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Gọi JSON API tới Google Apps Script (tự động làm mới token nếu cần)
+ */
+export async function callAppsScriptJsonApi<T = any>(
+  payload: Record<string, any>
+): Promise<T | null> {
+  const reqPayload = { ...payload };
+  const isAuthAction =
+    reqPayload.action === 'login' ||
+    reqPayload.action === 'setPassword' ||
+    reqPayload.action === 'changePassword' ||
+    reqPayload.action === 'checkEmail';
+
+  // Nếu request có đính kèm token tạm (NEXTSU_...), đổi sang token thật của Apps Script trước khi gửi
+  if (
+    !isAuthAction &&
+    typeof reqPayload.token === 'string' &&
+    reqPayload.token.startsWith('NEXTSU_')
+  ) {
+    const freshToken = await refreshServerTokenIfNeeded(reqPayload.email);
+    if (freshToken) {
+      reqPayload.token = freshToken;
+    }
+  }
+
+  const firstRes = await postToAppsScriptRaw<any>(reqPayload);
+
+  // Nếu token trên Apps Script hết hạn (expired: true), tự động đăng nhập lại ngầm và gửi lại
+  if (
+    !isAuthAction &&
+    firstRes &&
+    firstRes.ok === false &&
+    firstRes.expired === true
+  ) {
+    const freshToken = await refreshServerTokenIfNeeded(reqPayload.email);
+    if (freshToken) {
+      reqPayload.token = freshToken;
+      return await postToAppsScriptRaw<T>(reqPayload);
+    }
+  }
+
+  return firstRes as T | null;
 }
 
 /**

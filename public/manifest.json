@@ -1,0 +1,22 @@
+{
+  "short_name": "NextSu AI",
+  "name": "NextSu AI - FPT Telecom",
+  "description": "Cổng nhân viên & Trợ lý vận hành thông minh NextSu AI - FPT Telecom",
+  "icons": [
+    {
+      "src": "/apple-touch-icon.png",
+      "type": "image/png",
+      "sizes": "180x180"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#F8FAFC",
+  "theme_color": "#0B1736",
+  "display": "standalone",
+  "orientation": "portrait"
+}

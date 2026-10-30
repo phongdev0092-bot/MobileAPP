@@ -22,7 +22,7 @@ export const CONFIG = {
 
   // Đường dẫn thực thi (exec) của Google Apps Script Web App
   WEB_APP_URL:
-    'https://script.google.com/macros/s/AKfycby2h8SFwE4212R2Z95ADkvtlEcZ0P7NLsGJLHyx9s8LDTJjMXT0md9pyjQ7GLNI8y28/exec',
+    'https://script.google.com/macros/s/AKfycbxwC2hCm1KfmPfFlsVQ7dO-x-6eE4lgFVu-JPOeGej12b_5Bxglxa_hVRxY2zcT3ZRk/exec',
 
   CHROME_MOBILE_USER_AGENT:
     'Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UQ1A.240205.004) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36',

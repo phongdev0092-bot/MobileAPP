@@ -8,6 +8,8 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { useFonts } from 'expo-font';
+import { Ionicons } from '@expo/vector-icons';
 import { CONFIG } from './src/config';
 import { LoginScreen } from './src/components/LoginScreen';
 import { HomeScreen } from './src/components/HomeScreen';
@@ -19,11 +21,11 @@ import {
 
 /**
  * Màn hình gốc của ứng dụng Nextsu AI - FPT Telecom.
- * - Khi mở app: kiểm tra phiên đăng nhập đã lưu, nếu chưa có thì hiển thị màn hình Login hiện đại
- *   với logo Caption Nextsu AI - FPT Telecom (xác thực Email ở cột K và lưu mật khẩu ở cột H).
+ * - Khi mở app: nạp font hệ thống và kiểm tra phiên đăng nhập đã lưu.
  * - Sau khi đăng nhập thành công: mở giao diện chính Native cho toàn bộ các tác vụ vận hành.
  */
 export default function App() {
+  const [fontsLoaded, fontError] = useFonts(Ionicons.font);
   const [initializing, setInitializing] = useState<boolean>(true);
   const [token, setToken] = useState<string | null>(null);
   const [profile, setProfile] = useState<EmployeeProfile | null>(null);
@@ -72,7 +74,7 @@ export default function App() {
           style={styles.safeArea}
           edges={['top', 'left', 'right', 'bottom']}
         >
-          {initializing ? (
+          {initializing || (!fontsLoaded && !fontError) ? (
             <View style={styles.splashLoading}>
               <ActivityIndicator size="large" color="#00C6FF" />
             </View>
