@@ -13,8 +13,8 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { CONFIG } from '../config';
 import {
+  changeEmployeePassword,
   checkEmployeeEmail,
   createFirstPassword,
   EmployeeProfile,
@@ -22,35 +22,55 @@ import {
 } from '../services/sheetAuthService';
 
 interface LoginScreenProps {
-  onLoginSuccess: (token: string, profile: EmployeeProfile, password?: string) => void;
+  onLoginSuccess: (
+    token: string,
+    profile: EmployeeProfile,
+    password?: string
+  ) => void;
 }
 
-type AuthStep = 'EMAIL' | 'LOGIN_PASSWORD' | 'CREATE_PASSWORD';
+type AuthStep =
+  | 'EMAIL'
+  | 'LOGIN_PASSWORD'
+  | 'CREATE_PASSWORD'
+  | 'CHANGE_PASSWORD';
 
 /**
- * Màn hình Đăng nhập hiện đại mang nhận diện thương hiệu Caption Nextsu AI - FPT Telecom.
- * Quy trình:
- * 1. Nhập Email nhân viên -> Kiểm tra tồn tại ở cột K trên Sheet (17QLc9SlfpPPrR-d1R2BkBxA7DmCI5ZCuhmQffP5F6pY, gid=32204814).
- * 2. Nếu cột H đã có mật khẩu -> Chuyển sang bước nhập mật khẩu.
- * 3. Nếu đăng nhập lần đầu (cột H trống) -> Bắt buộc khởi tạo mật khẩu mới và lưu vào cột H.
+ * Màn hình Đăng nhập thiết kế sang trọng, tối giản theo tông màu Logo Caption Nextsu AI - FPT Telecom.
+ * - Không hiển thị bất kỳ dữ liệu cột hay thông tin nội bộ nào của Sheet ra giao diện.
+ * - Tích hợp đầy đủ: Xác thực Email -> Nhập mật khẩu / Tạo mật khẩu lần đầu / Đổi mật khẩu.
  */
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const [step, setStep] = useState<AuthStep>('EMAIL');
   const [email, setEmail] = useState<string>('');
+  const [oldPassword, setOldPassword] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [confirmPassword, setConfirmPassword] = useState<string>('');
-  const [showPassword, setShowPassword] = useState<boolean>(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState<boolean>(false);
+
+  const [showOldPass, setShowOldPass] = useState<boolean>(false);
+  const [showPass, setShowPass] = useState<boolean>(false);
+  const [showConfirmPass, setShowConfirmPass] = useState<boolean>(false);
+
+  const [focusedField, setFocusedField] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [checkedProfile, setCheckedProfile] = useState<EmployeeProfile | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [checkedProfile, setCheckedProfile] = useState<EmployeeProfile | null>(
+    null
+  );
+  const [avatarLoadError, setAvatarLoadError] = useState<boolean>(false);
 
-  // Bước 1: Kiểm tra Email trong cột K
+  const resetMessages = () => {
+    if (errorMsg) setErrorMsg(null);
+    if (successMsg) setSuccessMsg(null);
+  };
+
+  // Bước 1: Kiểm tra tài khoản Email
   const handleCheckEmail = async () => {
-    setErrorMsg(null);
+    resetMessages();
     const trimmed = email.trim().toLowerCase();
     if (!trimmed) {
-      setErrorMsg('Vui lòng nhập địa chỉ Email FPT Telecom của bạn.');
+      setErrorMsg('Vui lòng nhập địa chỉ Email của bạn.');
       return;
     }
 
@@ -59,15 +79,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     setLoading(false);
 
     if (!res.ok || !res.profile) {
-      setErrorMsg(
-        res.msg || 'Email không tồn tại trong danh sách nhân viên (cột K).'
-      );
+      setErrorMsg(res.msg || 'Tài khoản Email không tồn tại trên hệ thống.');
       return;
     }
 
     setCheckedProfile(res.profile);
+    setAvatarLoadError(false);
     setPassword('');
     setConfirmPassword('');
+    setOldPassword('');
 
     if (res.hasPassword) {
       setStep('LOGIN_PASSWORD');
@@ -76,9 +96,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     }
   };
 
-  // Bước 2a: Đăng nhập với mật khẩu cột H
+  // Bước 2a: Đăng nhập
   const handleLogin = async () => {
-    setErrorMsg(null);
+    resetMessages();
     if (!password) {
       setErrorMsg('Vui lòng nhập mật khẩu.');
       return;
@@ -91,10 +111,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     if (!res.ok) {
       if (res.needCreate) {
         setStep('CREATE_PASSWORD');
-        setErrorMsg('Tài khoản chưa có mật khẩu ở cột H. Vui lòng khởi tạo mật khẩu.');
         return;
       }
-      setErrorMsg(res.msg || 'Mật khẩu không đúng.');
+      setErrorMsg(res.msg || 'Mật khẩu không chính xác.');
       return;
     }
 
@@ -103,15 +122,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     }
   };
 
-  // Bước 2b: Khởi tạo mật khẩu lần đầu và lưu vào cột H
+  // Bước 2b: Khởi tạo mật khẩu lần đầu
   const handleCreatePassword = async () => {
-    setErrorMsg(null);
+    resetMessages();
     if (password.length < 6) {
-      setErrorMsg('Mật khẩu khởi tạo phải từ 6 ký tự trở lên.');
+      setErrorMsg('Mật khẩu phải có tối thiểu 6 ký tự.');
       return;
     }
     if (password !== confirmPassword) {
-      setErrorMsg('Mật khẩu xác nhận không khớp.');
+      setErrorMsg('Mật khẩu xác nhận không trùng khớp.');
       return;
     }
 
@@ -120,33 +139,90 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     setLoading(false);
 
     if (!res.ok || !res.profile || !res.token) {
-      setErrorMsg(res.msg || 'Không thể khởi tạo mật khẩu. Vui lòng thử lại.');
+      setErrorMsg(res.msg || 'Không thể thiết lập mật khẩu. Vui lòng thử lại.');
       return;
     }
 
     onLoginSuccess(res.token, res.profile, password);
   };
 
+  // Bước 2c: Đổi mật khẩu
+  const handleChangePassword = async () => {
+    resetMessages();
+    if (!oldPassword) {
+      setErrorMsg('Vui lòng nhập mật khẩu hiện tại.');
+      return;
+    }
+    if (password.length < 6) {
+      setErrorMsg('Mật khẩu mới phải từ 6 ký tự trở lên.');
+      return;
+    }
+    if (password === oldPassword) {
+      setErrorMsg('Mật khẩu mới phải khác mật khẩu hiện tại.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setErrorMsg('Mật khẩu xác nhận không trùng khớp.');
+      return;
+    }
+
+    setLoading(true);
+    const res = await changeEmployeePassword(
+      email,
+      oldPassword,
+      password,
+      confirmPassword
+    );
+    setLoading(false);
+
+    if (!res.ok) {
+      setErrorMsg(res.msg || 'Không thể đổi mật khẩu.');
+      return;
+    }
+
+    setOldPassword('');
+    setConfirmPassword('');
+    setSuccessMsg('Đổi mật khẩu thành công! Đang đăng nhập...');
+
+    setTimeout(() => {
+      if (res.profile && res.token) {
+        onLoginSuccess(res.token, res.profile, password);
+      } else {
+        setStep('LOGIN_PASSWORD');
+      }
+    }, 700);
+  };
+
   const handleBackToEmail = () => {
-    setStep('EMAIL');
-    setErrorMsg(null);
+    resetMessages();
     setPassword('');
     setConfirmPassword('');
+    setOldPassword('');
+    setStep('EMAIL');
+  };
+
+  const openChangePasswordStep = () => {
+    resetMessages();
+    setOldPassword('');
+    setPassword('');
+    setConfirmPassword('');
+    setStep('CHANGE_PASSWORD');
   };
 
   return (
-    <LinearGradient
-      colors={['#070F26', '#0D1E4C', '#171347']}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 1, y: 1 }}
-      style={styles.background}
-    >
-      {/* Các vòng sáng trang trí mang phong cách AI hiện đại */}
-      <View style={styles.glowCircleTop} />
-      <View style={styles.glowCircleBottom} />
+    <View style={styles.screenRoot}>
+      {/* Nền sáng hiện đại với dải màu mềm mại phía trên */}
+      <LinearGradient
+        colors={['#E0F2FE', '#EEF2FF', '#F8FAFC']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <View style={styles.topDecorCircleLeft} />
+      <View style={styles.topDecorCircleRight} />
 
       <KeyboardAvoidingView
-        style={styles.keyboardView}
+        style={styles.keyboardContainer}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <ScrollView
@@ -154,639 +230,872 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* Khung Logo Caption Nextsu AI - FPT Telecom */}
-          <View style={styles.brandSection}>
-            <View style={styles.logoCard}>
+          <View style={styles.centerContainer}>
+            {/* Khối Logo chính */}
+            <View style={styles.logoHeader}>
               <Image
                 source={require('../../assets/logo.png')}
                 style={styles.logoImage}
                 resizeMode="contain"
               />
             </View>
-            <View style={styles.aiBadge}>
-              <Ionicons name="sparkles" size={14} color="#00E5FF" />
-              <Text style={styles.aiBadgeText}>
-                NEXTSU AI PORTAL • FPT TELECOM
-              </Text>
-            </View>
-          </View>
 
-          {/* Thẻ Đăng nhập chính */}
-          <View style={styles.authCard}>
-            {/* Tiêu đề theo từng bước */}
-            {step === 'EMAIL' && (
-              <>
-                <Text style={styles.cardTitle}>Đăng nhập hệ thống</Text>
-                <Text style={styles.cardSubtitle}>
-                  Sử dụng Email nhân viên (cột K) để xác thực truy cập vào Nextsu AI
-                </Text>
-              </>
-            )}
-
-            {step === 'LOGIN_PASSWORD' && checkedProfile && (
-              <>
-                <View style={styles.userGreetingBox}>
-                  <View style={styles.avatarCircle}>
-                    <Text style={styles.avatarInitial}>
-                      {checkedProfile.name
-                        ? checkedProfile.name.charAt(0).toUpperCase()
-                        : 'N'}
-                    </Text>
-                  </View>
-                  <View style={styles.userGreetingInfo}>
-                    <Text style={styles.userGreetingName} numberOfLines={1}>
-                      {checkedProfile.name || 'Nhân viên FPT'}
-                    </Text>
-                    <Text style={styles.userGreetingMeta} numberOfLines={1}>
-                      MSNV: {checkedProfile.code || '---'} • {checkedProfile.partner || 'FPT Telecom'}
-                    </Text>
-                    <Text style={styles.userGreetingEmail} numberOfLines={1}>
-                      {checkedProfile.email}
-                    </Text>
-                  </View>
-                </View>
-                <Text style={styles.cardTitle}>Nhập mật khẩu</Text>
-                <Text style={styles.cardSubtitle}>
-                  Tài khoản đã được xác thực. Vui lòng nhập mật khẩu của bạn.
-                </Text>
-              </>
-            )}
-
-            {step === 'CREATE_PASSWORD' && checkedProfile && (
-              <>
-                <View style={styles.userGreetingBox}>
-                  <View style={styles.avatarCircle}>
-                    <Text style={styles.avatarInitial}>
-                      {checkedProfile.name
-                        ? checkedProfile.name.charAt(0).toUpperCase()
-                        : 'N'}
-                    </Text>
-                  </View>
-                  <View style={styles.userGreetingInfo}>
-                    <Text style={styles.userGreetingName} numberOfLines={1}>
-                      {checkedProfile.name || 'Nhân viên FPT'}
-                    </Text>
-                    <Text style={styles.userGreetingMeta} numberOfLines={1}>
-                      MSNV: {checkedProfile.code || '---'} • Dòng #{checkedProfile.row}
-                    </Text>
-                    <Text style={styles.userGreetingEmail} numberOfLines={1}>
-                      {checkedProfile.email}
-                    </Text>
-                  </View>
-                </View>
-                <View style={styles.firstLoginBanner}>
-                  <Ionicons
-                    name="shield-checkmark-outline"
-                    size={18}
-                    color="#0284C7"
-                  />
-                  <Text style={styles.firstLoginBannerText}>
-                    Đây là lần đăng nhập đầu tiên của bạn. Vui lòng khởi tạo mật khẩu (tối thiểu 6 ký tự) để lưu vào cột H trên hệ thống.
+            {/* Thẻ Form Đăng nhập tối giản, tinh tế */}
+            <View style={styles.card}>
+              {/* Tiêu đề từng bước */}
+              {step === 'EMAIL' && (
+                <View style={styles.headerBlock}>
+                  <Text style={styles.titleText}>Chào mừng trở lại</Text>
+                  <Text style={styles.subtitleText}>
+                    Nhập tài khoản Email của bạn để tiếp tục
                   </Text>
                 </View>
-              </>
-            )}
+              )}
 
-            {/* Thông báo lỗi nếu có */}
-            {errorMsg && (
-              <View style={styles.errorBanner}>
-                <Ionicons name="alert-circle" size={18} color="#DC2626" />
-                <Text style={styles.errorBannerText}>{errorMsg}</Text>
-              </View>
-            )}
-
-            {/* BƯỚC 1: Ô NHẬP EMAIL */}
-            {step === 'EMAIL' && (
-              <View style={styles.formGroup}>
-                <Text style={styles.inputLabel}>EMAIL NHÂN VIÊN (CỘT K)</Text>
-                <View style={styles.inputWrapper}>
-                  <Ionicons
-                    name="mail-outline"
-                    size={20}
-                    color="#0072FF"
-                    style={styles.inputIcon}
-                  />
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="VD: phuongnam.nhanht6@fpt.net"
-                    placeholderTextColor="#94A3B8"
-                    keyboardType="email-address"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    value={email}
-                    onChangeText={(t) => {
-                      setEmail(t);
-                      if (errorMsg) setErrorMsg(null);
-                    }}
-                    onSubmitEditing={handleCheckEmail}
-                    returnKeyType="next"
-                  />
-                  {email.length > 0 && (
-                    <TouchableOpacity
-                      onPress={() => setEmail('')}
-                      style={styles.clearBtn}
-                    >
-                      <Ionicons name="close-circle" size={18} color="#94A3B8" />
-                    </TouchableOpacity>
+              {step === 'LOGIN_PASSWORD' && (
+                <View style={styles.headerBlock}>
+                  {checkedProfile?.avatar && !avatarLoadError ? (
+                    <Image
+                      source={{ uri: checkedProfile.avatar }}
+                      style={styles.loginAvatarImg}
+                      onError={() => setAvatarLoadError(true)}
+                    />
+                  ) : (
+                    <View style={styles.loginAvatarFallback}>
+                      <Text style={styles.loginAvatarFallbackText}>
+                        {(checkedProfile?.name || email || 'U')
+                          .charAt(0)
+                          .toUpperCase()}
+                      </Text>
+                    </View>
                   )}
-                </View>
-
-                <TouchableOpacity
-                  activeOpacity={0.88}
-                  disabled={loading}
-                  onPress={handleCheckEmail}
-                  style={styles.submitBtnContainer}
-                >
-                  <LinearGradient
-                    colors={['#00C6FF', '#0072FF', '#6C3CE9']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
-                    style={styles.gradientButton}
-                  >
-                    {loading ? (
-                      <View style={styles.btnRow}>
-                        <ActivityIndicator color="#FFFFFF" size="small" />
-                        <Text style={styles.buttonText}>
-                          Đang kiểm tra dữ liệu...
-                        </Text>
-                      </View>
-                    ) : (
-                      <View style={styles.btnRow}>
-                        <Text style={styles.buttonText}>Tiếp tục xác thực</Text>
-                        <Ionicons
-                          name="arrow-forward"
-                          size={19}
-                          color="#FFFFFF"
-                        />
-                      </View>
-                    )}
-                  </LinearGradient>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* BƯỚC 2A: ĐĂNG NHẬP BẰNG MẬT KHẨU */}
-            {step === 'LOGIN_PASSWORD' && (
-              <View style={styles.formGroup}>
-                <Text style={styles.inputLabel}>MẬT KHẨU CỦA BẠN (CỘT H)</Text>
-                <View style={styles.inputWrapper}>
-                  <Ionicons
-                    name="lock-closed-outline"
-                    size={20}
-                    color="#0072FF"
-                    style={styles.inputIcon}
-                  />
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="Nhập mật khẩu..."
-                    placeholderTextColor="#94A3B8"
-                    secureTextEntry={!showPassword}
-                    autoCapitalize="none"
-                    value={password}
-                    onChangeText={(t) => {
-                      setPassword(t);
-                      if (errorMsg) setErrorMsg(null);
-                    }}
-                    onSubmitEditing={handleLogin}
-                    returnKeyType="done"
-                  />
-                  <TouchableOpacity
-                    onPress={() => setShowPassword(!showPassword)}
-                    style={styles.eyeBtn}
-                  >
-                    <Ionicons
-                      name={showPassword ? 'eye-off-outline' : 'eye-outline'}
-                      size={20}
-                      color="#64748B"
-                    />
-                  </TouchableOpacity>
-                </View>
-
-                <TouchableOpacity
-                  activeOpacity={0.88}
-                  disabled={loading}
-                  onPress={handleLogin}
-                  style={styles.submitBtnContainer}
-                >
-                  <LinearGradient
-                    colors={['#00C6FF', '#0072FF', '#6C3CE9']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
-                    style={styles.gradientButton}
-                  >
-                    {loading ? (
-                      <View style={styles.btnRow}>
-                        <ActivityIndicator color="#FFFFFF" size="small" />
-                        <Text style={styles.buttonText}>Đang đăng nhập...</Text>
-                      </View>
-                    ) : (
-                      <View style={styles.btnRow}>
-                        <Text style={styles.buttonText}>Đăng nhập ngay</Text>
-                        <Ionicons
-                          name="log-in-outline"
-                          size={20}
-                          color="#FFFFFF"
-                        />
-                      </View>
-                    )}
-                  </LinearGradient>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={handleBackToEmail}
-                  style={styles.switchAccountBtn}
-                >
-                  <Ionicons name="arrow-back" size={16} color="#0072FF" />
-                  <Text style={styles.switchAccountText}>
-                    Đổi tài khoản Email khác
+                  <Text style={styles.welcomeNameText}>
+                    Xin chào, {checkedProfile?.name || email.trim().toLowerCase()}
                   </Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* BƯỚC 2B: KHỞI TẠO MẬT KHẨU LẦN ĐẦU */}
-            {step === 'CREATE_PASSWORD' && (
-              <View style={styles.formGroup}>
-                <Text style={styles.inputLabel}>
-                  TẠO MẬT KHẨU MỚI (LƯU CỘT H)
-                </Text>
-                <View style={styles.inputWrapper}>
-                  <Ionicons
-                    name="key-outline"
-                    size={20}
-                    color="#0072FF"
-                    style={styles.inputIcon}
-                  />
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="Tối thiểu 6 ký tự..."
-                    placeholderTextColor="#94A3B8"
-                    secureTextEntry={!showPassword}
-                    autoCapitalize="none"
-                    value={password}
-                    onChangeText={(t) => {
-                      setPassword(t);
-                      if (errorMsg) setErrorMsg(null);
-                    }}
-                  />
                   <TouchableOpacity
-                    onPress={() => setShowPassword(!showPassword)}
-                    style={styles.eyeBtn}
+                    style={styles.emailPill}
+                    onPress={handleBackToEmail}
+                    activeOpacity={0.75}
                   >
-                    <Ionicons
-                      name={showPassword ? 'eye-off-outline' : 'eye-outline'}
-                      size={20}
-                      color="#64748B"
-                    />
+                    <Text style={styles.emailPillText} numberOfLines={1}>
+                      {email.trim().toLowerCase()}
+                    </Text>
+                    <Ionicons name="sync-outline" size={14} color="#64748B" />
                   </TouchableOpacity>
                 </View>
+              )}
 
-                <Text style={[styles.inputLabel, { marginTop: 14 }]}>
-                  XÁC NHẬN LẠI MẬT KHẨU
-                </Text>
-                <View style={styles.inputWrapper}>
-                  <Ionicons
-                    name="checkmark-done-outline"
-                    size={20}
-                    color="#0072FF"
-                    style={styles.inputIcon}
-                  />
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="Nhập lại mật khẩu..."
-                    placeholderTextColor="#94A3B8"
-                    secureTextEntry={!showConfirmPassword}
-                    autoCapitalize="none"
-                    value={confirmPassword}
-                    onChangeText={(t) => {
-                      setConfirmPassword(t);
-                      if (errorMsg) setErrorMsg(null);
-                    }}
-                    onSubmitEditing={handleCreatePassword}
-                    returnKeyType="done"
-                  />
-                  <TouchableOpacity
-                    onPress={() => setShowConfirmPassword(!showConfirmPassword)}
-                    style={styles.eyeBtn}
+              {step === 'CREATE_PASSWORD' && (
+                <View style={styles.headerBlock}>
+                  {checkedProfile?.avatar && !avatarLoadError ? (
+                    <Image
+                      source={{ uri: checkedProfile.avatar }}
+                      style={styles.loginAvatarImg}
+                      onError={() => setAvatarLoadError(true)}
+                    />
+                  ) : (
+                    <View style={styles.loginAvatarFallback}>
+                      <Text style={styles.loginAvatarFallbackText}>
+                        {(checkedProfile?.name || email || 'U')
+                          .charAt(0)
+                          .toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
+                  <Text style={styles.welcomeNameText}>
+                    Xin chào, {checkedProfile?.name || email.trim().toLowerCase()}
+                  </Text>
+                  <Text style={styles.subtitleText}>
+                    Thiết lập mật khẩu cho lần đăng nhập đầu tiên của bạn
+                  </Text>
+                </View>
+              )}
+
+              {step === 'CHANGE_PASSWORD' && (
+                <View style={styles.headerBlock}>
+                  {checkedProfile?.avatar && !avatarLoadError ? (
+                    <Image
+                      source={{ uri: checkedProfile.avatar }}
+                      style={styles.loginAvatarImg}
+                      onError={() => setAvatarLoadError(true)}
+                    />
+                  ) : (
+                    <View style={styles.loginAvatarFallback}>
+                      <Text style={styles.loginAvatarFallbackText}>
+                        {(checkedProfile?.name || email || 'U')
+                          .charAt(0)
+                          .toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
+                  <Text style={styles.welcomeNameText}>
+                    Xin chào, {checkedProfile?.name || email.trim().toLowerCase()}
+                  </Text>
+                  <Text style={styles.subtitleText}>
+                    Nhập mật khẩu hiện tại và mật khẩu mới để cập nhật
+                  </Text>
+                </View>
+              )}
+
+              {/* Hộp báo lỗi / thành công */}
+              {errorMsg && (
+                <View style={styles.alertError}>
+                  <Ionicons name="alert-circle" size={18} color="#EF4444" />
+                  <Text style={styles.alertErrorText}>{errorMsg}</Text>
+                </View>
+              )}
+
+              {successMsg && (
+                <View style={styles.alertSuccess}>
+                  <Ionicons name="checkmark-circle" size={18} color="#10B981" />
+                  <Text style={styles.alertSuccessText}>{successMsg}</Text>
+                </View>
+              )}
+
+              {/* ================= BƯỚC 1: NHẬP EMAIL ================= */}
+              {step === 'EMAIL' && (
+                <View style={styles.formSection}>
+                  <Text style={styles.fieldLabel}>Tài khoản Email</Text>
+                  <View
+                    style={[
+                      styles.inputBox,
+                      focusedField === 'email' && styles.inputBoxFocused,
+                    ]}
                   >
                     <Ionicons
-                      name={
-                        showConfirmPassword ? 'eye-off-outline' : 'eye-outline'
+                      name="mail-outline"
+                      size={20}
+                      color={focusedField === 'email' ? '#0066FF' : '#94A3B8'}
+                      style={styles.leftIcon}
+                    />
+                    <TextInput
+                      style={styles.inputControl}
+                      placeholder="ten.nhanvien@fpt.net"
+                      placeholderTextColor="#94A3B8"
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      value={email}
+                      onFocus={() => setFocusedField('email')}
+                      onBlur={() => setFocusedField(null)}
+                      onChangeText={(t) => {
+                        setEmail(t);
+                        resetMessages();
+                      }}
+                      onSubmitEditing={handleCheckEmail}
+                      returnKeyType="next"
+                    />
+                    {email.length > 0 && (
+                      <TouchableOpacity
+                        onPress={() => setEmail('')}
+                        style={styles.iconActionBtn}
+                      >
+                        <Ionicons
+                          name="close-circle"
+                          size={18}
+                          color="#CBD5E1"
+                        />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+
+                  <TouchableOpacity
+                    activeOpacity={0.88}
+                    disabled={loading}
+                    onPress={handleCheckEmail}
+                    style={styles.primaryBtnWrap}
+                  >
+                    <LinearGradient
+                      colors={['#00B4FF', '#0066FF', '#6C3CE9']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={styles.primaryBtnGradient}
+                    >
+                      {loading ? (
+                        <ActivityIndicator color="#FFFFFF" size="small" />
+                      ) : (
+                        <>
+                          <Text style={styles.primaryBtnText}>Tiếp tục</Text>
+                          <Ionicons
+                            name="arrow-forward"
+                            size={18}
+                            color="#FFFFFF"
+                          />
+                        </>
+                      )}
+                    </LinearGradient>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {/* ================= BƯỚC 2A: ĐĂNG NHẬP ================= */}
+              {step === 'LOGIN_PASSWORD' && (
+                <View style={styles.formSection}>
+                  <View style={styles.labelRow}>
+                    <Text style={styles.fieldLabel}>Mật khẩu</Text>
+                    <TouchableOpacity onPress={openChangePasswordStep}>
+                      <Text style={styles.changePassLink}>Đổi mật khẩu?</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <View
+                    style={[
+                      styles.inputBox,
+                      focusedField === 'loginPass' && styles.inputBoxFocused,
+                    ]}
+                  >
+                    <Ionicons
+                      name="lock-closed-outline"
+                      size={20}
+                      color={
+                        focusedField === 'loginPass' ? '#0066FF' : '#94A3B8'
                       }
-                      size={20}
-                      color="#64748B"
+                      style={styles.leftIcon}
                     />
+                    <TextInput
+                      style={styles.inputControl}
+                      placeholder="Nhập mật khẩu của bạn"
+                      placeholderTextColor="#94A3B8"
+                      secureTextEntry={!showPass}
+                      autoCapitalize="none"
+                      value={password}
+                      onFocus={() => setFocusedField('loginPass')}
+                      onBlur={() => setFocusedField(null)}
+                      onChangeText={(t) => {
+                        setPassword(t);
+                        resetMessages();
+                      }}
+                      onSubmitEditing={handleLogin}
+                      returnKeyType="done"
+                    />
+                    <TouchableOpacity
+                      onPress={() => setShowPass(!showPass)}
+                      style={styles.iconActionBtn}
+                    >
+                      <Ionicons
+                        name={showPass ? 'eye-off-outline' : 'eye-outline'}
+                        size={20}
+                        color="#64748B"
+                      />
+                    </TouchableOpacity>
+                  </View>
+
+                  <TouchableOpacity
+                    activeOpacity={0.88}
+                    disabled={loading}
+                    onPress={handleLogin}
+                    style={styles.primaryBtnWrap}
+                  >
+                    <LinearGradient
+                      colors={['#00B4FF', '#0066FF', '#6C3CE9']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={styles.primaryBtnGradient}
+                    >
+                      {loading ? (
+                        <ActivityIndicator color="#FFFFFF" size="small" />
+                      ) : (
+                        <Text style={styles.primaryBtnText}>Đăng nhập</Text>
+                      )}
+                    </LinearGradient>
+                  </TouchableOpacity>
+
+                  <View style={styles.bottomActionsRow}>
+                    <TouchableOpacity
+                      style={styles.secondaryActionBtn}
+                      onPress={handleBackToEmail}
+                    >
+                      <Ionicons name="arrow-back" size={16} color="#475569" />
+                      <Text style={styles.secondaryActionText}>
+                        Tài khoản khác
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.secondaryActionBtn}
+                      onPress={openChangePasswordStep}
+                    >
+                      <Ionicons name="key-outline" size={16} color="#0066FF" />
+                      <Text
+                        style={[
+                          styles.secondaryActionText,
+                          { color: '#0066FF' },
+                        ]}
+                      >
+                        Đổi mật khẩu
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+
+              {/* ================= BƯỚC 2B: TẠO MẬT KHẨU LẦN ĐẦU ================= */}
+              {step === 'CREATE_PASSWORD' && (
+                <View style={styles.formSection}>
+                  <Text style={styles.fieldLabel}>Mật khẩu mới</Text>
+                  <View
+                    style={[
+                      styles.inputBox,
+                      focusedField === 'newPass' && styles.inputBoxFocused,
+                    ]}
+                  >
+                    <Ionicons
+                      name="lock-closed-outline"
+                      size={20}
+                      color={focusedField === 'newPass' ? '#0066FF' : '#94A3B8'}
+                      style={styles.leftIcon}
+                    />
+                    <TextInput
+                      style={styles.inputControl}
+                      placeholder="Tối thiểu 6 ký tự"
+                      placeholderTextColor="#94A3B8"
+                      secureTextEntry={!showPass}
+                      autoCapitalize="none"
+                      value={password}
+                      onFocus={() => setFocusedField('newPass')}
+                      onBlur={() => setFocusedField(null)}
+                      onChangeText={(t) => {
+                        setPassword(t);
+                        resetMessages();
+                      }}
+                    />
+                    <TouchableOpacity
+                      onPress={() => setShowPass(!showPass)}
+                      style={styles.iconActionBtn}
+                    >
+                      <Ionicons
+                        name={showPass ? 'eye-off-outline' : 'eye-outline'}
+                        size={20}
+                        color="#64748B"
+                      />
+                    </TouchableOpacity>
+                  </View>
+
+                  <Text style={[styles.fieldLabel, { marginTop: 14 }]}>
+                    Nhập lại mật khẩu
+                  </Text>
+                  <View
+                    style={[
+                      styles.inputBox,
+                      focusedField === 'confirmPass' && styles.inputBoxFocused,
+                    ]}
+                  >
+                    <Ionicons
+                      name="shield-checkmark-outline"
+                      size={20}
+                      color={
+                        focusedField === 'confirmPass' ? '#0066FF' : '#94A3B8'
+                      }
+                      style={styles.leftIcon}
+                    />
+                    <TextInput
+                      style={styles.inputControl}
+                      placeholder="Xác nhận mật khẩu mới"
+                      placeholderTextColor="#94A3B8"
+                      secureTextEntry={!showConfirmPass}
+                      autoCapitalize="none"
+                      value={confirmPassword}
+                      onFocus={() => setFocusedField('confirmPass')}
+                      onBlur={() => setFocusedField(null)}
+                      onChangeText={(t) => {
+                        setConfirmPassword(t);
+                        resetMessages();
+                      }}
+                      onSubmitEditing={handleCreatePassword}
+                      returnKeyType="done"
+                    />
+                    <TouchableOpacity
+                      onPress={() => setShowConfirmPass(!showConfirmPass)}
+                      style={styles.iconActionBtn}
+                    >
+                      <Ionicons
+                        name={
+                          showConfirmPass ? 'eye-off-outline' : 'eye-outline'
+                        }
+                        size={20}
+                        color="#64748B"
+                      />
+                    </TouchableOpacity>
+                  </View>
+
+                  <TouchableOpacity
+                    activeOpacity={0.88}
+                    disabled={loading}
+                    onPress={handleCreatePassword}
+                    style={styles.primaryBtnWrap}
+                  >
+                    <LinearGradient
+                      colors={['#00B4FF', '#0066FF', '#6C3CE9']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={styles.primaryBtnGradient}
+                    >
+                      {loading ? (
+                        <ActivityIndicator color="#FFFFFF" size="small" />
+                      ) : (
+                        <Text style={styles.primaryBtnText}>
+                          Hoàn tất & Đăng nhập
+                        </Text>
+                      )}
+                    </LinearGradient>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.secondaryActionBtn, { marginTop: 16, alignSelf: 'center' }]}
+                    onPress={handleBackToEmail}
+                  >
+                    <Ionicons name="arrow-back" size={16} color="#475569" />
+                    <Text style={styles.secondaryActionText}>
+                      Quay lại bước nhập Email
+                    </Text>
                   </TouchableOpacity>
                 </View>
+              )}
 
-                <TouchableOpacity
-                  activeOpacity={0.88}
-                  disabled={loading}
-                  onPress={handleCreatePassword}
-                  style={styles.submitBtnContainer}
-                >
-                  <LinearGradient
-                    colors={['#00C6FF', '#0072FF', '#6C3CE9']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
-                    style={styles.gradientButton}
+              {/* ================= BƯỚC 2C: ĐỔI MẬT KHẨU ================= */}
+              {step === 'CHANGE_PASSWORD' && (
+                <View style={styles.formSection}>
+                  <Text style={styles.fieldLabel}>Mật khẩu hiện tại</Text>
+                  <View
+                    style={[
+                      styles.inputBox,
+                      focusedField === 'oldPass' && styles.inputBoxFocused,
+                    ]}
                   >
-                    {loading ? (
-                      <View style={styles.btnRow}>
-                        <ActivityIndicator color="#FFFFFF" size="small" />
-                        <Text style={styles.buttonText}>
-                          Đang khởi tạo mật khẩu...
-                        </Text>
-                      </View>
-                    ) : (
-                      <View style={styles.btnRow}>
-                        <Text style={styles.buttonText}>
-                          Lưu mật khẩu & Đăng nhập
-                        </Text>
-                        <Ionicons
-                          name="checkmark-circle-outline"
-                          size={20}
-                          color="#FFFFFF"
-                        />
-                      </View>
-                    )}
-                  </LinearGradient>
-                </TouchableOpacity>
+                    <Ionicons
+                      name="key-outline"
+                      size={20}
+                      color={focusedField === 'oldPass' ? '#0066FF' : '#94A3B8'}
+                      style={styles.leftIcon}
+                    />
+                    <TextInput
+                      style={styles.inputControl}
+                      placeholder="Nhập mật khẩu đang sử dụng"
+                      placeholderTextColor="#94A3B8"
+                      secureTextEntry={!showOldPass}
+                      autoCapitalize="none"
+                      value={oldPassword}
+                      onFocus={() => setFocusedField('oldPass')}
+                      onBlur={() => setFocusedField(null)}
+                      onChangeText={(t) => {
+                        setOldPassword(t);
+                        resetMessages();
+                      }}
+                    />
+                    <TouchableOpacity
+                      onPress={() => setShowOldPass(!showOldPass)}
+                      style={styles.iconActionBtn}
+                    >
+                      <Ionicons
+                        name={showOldPass ? 'eye-off-outline' : 'eye-outline'}
+                        size={20}
+                        color="#64748B"
+                      />
+                    </TouchableOpacity>
+                  </View>
 
-                <TouchableOpacity
-                  onPress={handleBackToEmail}
-                  style={styles.switchAccountBtn}
-                >
-                  <Ionicons name="arrow-back" size={16} color="#0072FF" />
-                  <Text style={styles.switchAccountText}>
-                    Quay lại nhập Email khác
+                  <Text style={[styles.fieldLabel, { marginTop: 14 }]}>
+                    Mật khẩu mới
                   </Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
+                  <View
+                    style={[
+                      styles.inputBox,
+                      focusedField === 'changeNewPass' &&
+                        styles.inputBoxFocused,
+                    ]}
+                  >
+                    <Ionicons
+                      name="lock-closed-outline"
+                      size={20}
+                      color={
+                        focusedField === 'changeNewPass' ? '#0066FF' : '#94A3B8'
+                      }
+                      style={styles.leftIcon}
+                    />
+                    <TextInput
+                      style={styles.inputControl}
+                      placeholder="Tối thiểu 6 ký tự"
+                      placeholderTextColor="#94A3B8"
+                      secureTextEntry={!showPass}
+                      autoCapitalize="none"
+                      value={password}
+                      onFocus={() => setFocusedField('changeNewPass')}
+                      onBlur={() => setFocusedField(null)}
+                      onChangeText={(t) => {
+                        setPassword(t);
+                        resetMessages();
+                      }}
+                    />
+                    <TouchableOpacity
+                      onPress={() => setShowPass(!showPass)}
+                      style={styles.iconActionBtn}
+                    >
+                      <Ionicons
+                        name={showPass ? 'eye-off-outline' : 'eye-outline'}
+                        size={20}
+                        color="#64748B"
+                      />
+                    </TouchableOpacity>
+                  </View>
 
-          {/* Chân trang */}
-          <Text style={styles.footerText}>
-            Powered by Caption Nextsu AI — FPT Telecom
-          </Text>
+                  <Text style={[styles.fieldLabel, { marginTop: 14 }]}>
+                    Xác nhận mật khẩu mới
+                  </Text>
+                  <View
+                    style={[
+                      styles.inputBox,
+                      focusedField === 'changeConfirmPass' &&
+                        styles.inputBoxFocused,
+                    ]}
+                  >
+                    <Ionicons
+                      name="shield-checkmark-outline"
+                      size={20}
+                      color={
+                        focusedField === 'changeConfirmPass'
+                          ? '#0066FF'
+                          : '#94A3B8'
+                      }
+                      style={styles.leftIcon}
+                    />
+                    <TextInput
+                      style={styles.inputControl}
+                      placeholder="Nhập lại mật khẩu mới"
+                      placeholderTextColor="#94A3B8"
+                      secureTextEntry={!showConfirmPass}
+                      autoCapitalize="none"
+                      value={confirmPassword}
+                      onFocus={() => setFocusedField('changeConfirmPass')}
+                      onBlur={() => setFocusedField(null)}
+                      onChangeText={(t) => {
+                        setConfirmPassword(t);
+                        resetMessages();
+                      }}
+                      onSubmitEditing={handleChangePassword}
+                      returnKeyType="done"
+                    />
+                    <TouchableOpacity
+                      onPress={() => setShowConfirmPass(!showConfirmPass)}
+                      style={styles.iconActionBtn}
+                    >
+                      <Ionicons
+                        name={
+                          showConfirmPass ? 'eye-off-outline' : 'eye-outline'
+                        }
+                        size={20}
+                        color="#64748B"
+                      />
+                    </TouchableOpacity>
+                  </View>
+
+                  <TouchableOpacity
+                    activeOpacity={0.88}
+                    disabled={loading}
+                    onPress={handleChangePassword}
+                    style={styles.primaryBtnWrap}
+                  >
+                    <LinearGradient
+                      colors={['#00B4FF', '#0066FF', '#6C3CE9']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={styles.primaryBtnGradient}
+                    >
+                      {loading ? (
+                        <ActivityIndicator color="#FFFFFF" size="small" />
+                      ) : (
+                        <Text style={styles.primaryBtnText}>
+                          Cập nhật mật khẩu
+                        </Text>
+                      )}
+                    </LinearGradient>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.secondaryActionBtn,
+                      { marginTop: 16, alignSelf: 'center' },
+                    ]}
+                    onPress={() => {
+                      resetMessages();
+                      setPassword('');
+                      setConfirmPassword('');
+                      setOldPassword('');
+                      setStep('LOGIN_PASSWORD');
+                    }}
+                  >
+                    <Ionicons name="arrow-back" size={16} color="#475569" />
+                    <Text style={styles.secondaryActionText}>
+                      Quay lại đăng nhập
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+
+            <Text style={styles.copyrightText}>
+              © NextSu AI — FPT Telecom
+            </Text>
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
-    </LinearGradient>
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
-  background: {
+  screenRoot: {
     flex: 1,
+    backgroundColor: '#F8FAFC',
   },
-  glowCircleTop: {
+  topDecorCircleLeft: {
     position: 'absolute',
-    top: -90,
-    right: -70,
-    width: 260,
-    height: 260,
-    borderRadius: 130,
-    backgroundColor: 'rgba(0, 198, 255, 0.18)',
-  },
-  glowCircleBottom: {
-    position: 'absolute',
-    bottom: -100,
+    top: -120,
     left: -80,
+    width: 300,
+    height: 300,
+    borderRadius: 150,
+    backgroundColor: 'rgba(0, 180, 255, 0.12)',
+  },
+  topDecorCircleRight: {
+    position: 'absolute',
+    top: -100,
+    right: -90,
     width: 280,
     height: 280,
     borderRadius: 140,
-    backgroundColor: 'rgba(108, 60, 233, 0.22)',
+    backgroundColor: 'rgba(108, 60, 233, 0.1)',
   },
-  keyboardView: {
+  keyboardContainer: {
     flex: 1,
   },
   scrollContent: {
     flexGrow: 1,
     justifyContent: 'center',
-    paddingHorizontal: 22,
-    paddingVertical: 32,
-  },
-  brandSection: {
     alignItems: 'center',
-    marginBottom: 24,
+    paddingHorizontal: 20,
+    paddingVertical: 28,
   },
-  logoCard: {
+  centerContainer: {
     width: '100%',
-    maxWidth: 320,
-    height: 120,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 24,
-    paddingHorizontal: 18,
-    paddingVertical: 10,
+    maxWidth: 420,
     alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 10,
-    shadowColor: '#00C6FF',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 14,
+  },
+  logoHeader: {
+    width: '100%',
+    alignItems: 'center',
+    marginBottom: 22,
   },
   logoImage: {
+    width: 260,
+    height: 110,
+  },
+  card: {
     width: '100%',
-    height: '100%',
-  },
-  aiBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0, 198, 255, 0.14)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 198, 255, 0.35)',
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 20,
-    marginTop: 14,
-    gap: 6,
-  },
-  aiBadgeText: {
-    color: '#E0F2FE',
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 1,
-  },
-  authCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 24,
-    padding: 24,
-    elevation: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.2,
-    shadowRadius: 18,
+    borderRadius: 28,
+    paddingHorizontal: 26,
+    paddingVertical: 30,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    elevation: 8,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.06,
+    shadowRadius: 24,
   },
-  cardTitle: {
-    fontSize: 22,
+  headerBlock: {
+    alignItems: 'center',
+    marginBottom: 22,
+  },
+  titleText: {
+    fontSize: 23,
     fontWeight: '800',
     color: '#0F172A',
-    marginBottom: 6,
+    textAlign: 'center',
   },
-  cardSubtitle: {
-    fontSize: 13.5,
-    lineHeight: 20,
-    color: '#64748B',
-    marginBottom: 20,
+  loginAvatarImg: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    borderWidth: 2.5,
+    borderColor: '#0066FF',
+    backgroundColor: '#E2E8F0',
+    marginBottom: 12,
   },
-  userGreetingBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F0F7FF',
-    borderWidth: 1,
-    borderColor: '#BAE6FD',
-    borderRadius: 16,
-    padding: 12,
-    marginBottom: 16,
-  },
-  avatarCircle: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: '#0072FF',
+  loginAvatarFallback: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#0066FF',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    marginBottom: 12,
   },
-  avatarInitial: {
+  loginAvatarFallbackText: {
     color: '#FFFFFF',
-    fontSize: 20,
+    fontSize: 28,
     fontWeight: '800',
   },
-  userGreetingInfo: {
-    flex: 1,
-  },
-  userGreetingName: {
-    fontSize: 16,
-    fontWeight: '700',
+  welcomeNameText: {
+    fontSize: 20,
+    fontWeight: '800',
     color: '#0F172A',
+    textAlign: 'center',
   },
-  userGreetingMeta: {
-    fontSize: 12,
-    color: '#0284C7',
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  userGreetingEmail: {
-    fontSize: 12,
+  subtitleText: {
+    fontSize: 14,
     color: '#64748B',
-    marginTop: 1,
+    textAlign: 'center',
+    marginTop: 6,
+    lineHeight: 20,
   },
-  firstLoginBanner: {
+  emailPill: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    backgroundColor: '#E0F2FE',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 16,
-    gap: 8,
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 20,
+    marginTop: 10,
+    gap: 6,
+    maxWidth: '100%',
   },
-  firstLoginBannerText: {
-    flex: 1,
-    fontSize: 12.5,
-    lineHeight: 18,
-    color: '#0369A1',
+  emailPillText: {
+    fontSize: 13.5,
     fontWeight: '600',
+    color: '#1E293B',
+    flexShrink: 1,
   },
-  errorBanner: {
+  alertError: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FEF2F2',
     borderWidth: 1,
     borderColor: '#FECACA',
-    borderRadius: 12,
-    padding: 12,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
     marginBottom: 16,
     gap: 8,
   },
-  errorBannerText: {
+  alertErrorText: {
     flex: 1,
     fontSize: 13,
-    color: '#B91C1C',
+    color: '#DC2626',
     fontWeight: '600',
   },
-  formGroup: {
+  alertSuccess: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ECFDF5',
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    marginBottom: 16,
+    gap: 8,
+  },
+  alertSuccessText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#059669',
+    fontWeight: '600',
+  },
+  formSection: {
     width: '100%',
   },
-  inputLabel: {
-    fontSize: 11.5,
-    fontWeight: '700',
-    color: '#475569',
+  labelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: 8,
-    letterSpacing: 0.6,
   },
-  inputWrapper: {
+  fieldLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#334155',
+    marginBottom: 8,
+  },
+  changePassLink: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0066FF',
+    marginBottom: 8,
+  },
+  inputBox: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#F8FAFC',
     borderWidth: 1.5,
-    borderColor: '#CBD5E1',
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    height: 52,
+    borderColor: '#E2E8F0',
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    height: 54,
   },
-  inputIcon: {
+  inputBoxFocused: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#0066FF',
+  },
+  leftIcon: {
     marginRight: 10,
   },
-  textInput: {
+  inputControl: {
     flex: 1,
+    height: '100%',
     fontSize: 15,
     color: '#0F172A',
     fontWeight: '500',
-    height: '100%',
   },
-  clearBtn: {
-    padding: 4,
-  },
-  eyeBtn: {
+  iconActionBtn: {
     padding: 6,
   },
-  submitBtnContainer: {
+  primaryBtnWrap: {
     marginTop: 22,
-    borderRadius: 14,
+    borderRadius: 16,
     overflow: 'hidden',
     elevation: 4,
-    shadowColor: '#0072FF',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
+    shadowColor: '#0066FF',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
   },
-  gradientButton: {
-    height: 52,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 20,
-  },
-  btnRow: {
+  primaryBtnGradient: {
+    height: 54,
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 8,
   },
-  buttonText: {
+  primaryBtnText: {
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '700',
   },
-  switchAccountBtn: {
+  bottomActionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 16,
-    paddingVertical: 6,
-    gap: 6,
+    justifyContent: 'space-between',
+    marginTop: 18,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
   },
-  switchAccountText: {
-    color: '#0072FF',
+  secondaryActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingVertical: 4,
+  },
+  secondaryActionText: {
     fontSize: 13.5,
     fontWeight: '600',
+    color: '#475569',
   },
-  footerText: {
-    textAlign: 'center',
-    color: 'rgba(226, 232, 240, 0.7)',
+  copyrightText: {
+    marginTop: 22,
     fontSize: 12,
-    marginTop: 24,
-    fontWeight: '500',
+    color: '#94A3B8',
+    fontWeight: '600',
   },
 });

@@ -19,10 +19,12 @@ import * as ImagePicker from 'expo-image-picker';
 import { CONFIG } from '../config';
 import {
   callAppsScriptJsonApi,
+  changeEmployeePassword,
   EmployeeProfile,
   fetchActiveStaffList,
   StaffOption,
 } from '../services/sheetAuthService';
+import { ScheduleView } from './ScheduleView';
 import { PortalWebView } from './PortalWebView';
 
 interface HomeScreenProps {
@@ -34,6 +36,7 @@ interface HomeScreenProps {
 
 type ActiveTab =
   | 'HOME'
+  | 'SCHEDULE'
   | 'BYPASS'
   | 'CLEAR'
   | 'MYBAE'
@@ -88,6 +91,14 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [staffSearch, setStaffSearch] = useState<string>('');
   const [selectedStaff, setSelectedStaff] = useState<StaffOption | null>(null);
   const [showStaffModal, setShowStaffModal] = useState<boolean>(false);
+
+  // Modal đổi mật khẩu
+  const [showChangePassModal, setShowChangePassModal] = useState<boolean>(false);
+  const [oldPassInput, setOldPassInput] = useState<string>('');
+  const [newPassInput, setNewPassInput] = useState<string>('');
+  const [confirmPassInput, setConfirmPassInput] = useState<string>('');
+  const [changingPass, setChangingPass] = useState<boolean>(false);
+  const [avatarLoadError, setAvatarLoadError] = useState<boolean>(false);
 
   // Tải danh sách nhân viên Active khi vào màn hình
   useEffect(() => {
@@ -370,50 +381,84 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               />
             </View>
             <View>
-              <Text style={styles.headerAppTitle}>Nextsu AI</Text>
+              <Text style={styles.headerAppTitle}>NextSu AI</Text>
               <Text style={styles.headerAppSub}>FPT TELECOM PORTAL</Text>
             </View>
           </View>
 
-          <TouchableOpacity
-            style={styles.logoutBtn}
-            onPress={() => {
-              Alert.alert(
-                'Đăng xuất',
-                'Bạn có chắc chắn muốn đăng xuất tài khoản?',
-                [
-                  { text: 'Hủy', style: 'cancel' },
-                  { text: 'Đăng xuất', style: 'destructive', onPress: onLogout },
-                ]
-              );
-            }}
-          >
-            <Ionicons name="log-out-outline" size={18} color="#FFE4E6" />
-            <Text style={styles.logoutBtnText}>Thoát</Text>
-          </TouchableOpacity>
+          <View style={styles.headerRightActions}>
+            <TouchableOpacity
+              style={styles.changePassBtn}
+              onPress={() => {
+                setOldPassInput('');
+                setNewPassInput('');
+                setConfirmPassInput('');
+                setShowChangePassModal(true);
+              }}
+            >
+              <Ionicons name="key-outline" size={16} color="#E0F2FE" />
+              <Text style={styles.changePassBtnText}>Đổi MK</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.logoutBtn}
+              onPress={() => {
+                Alert.alert(
+                  'Đăng xuất',
+                  'Bạn có chắc chắn muốn đăng xuất tài khoản?',
+                  [
+                    { text: 'Hủy', style: 'cancel' },
+                    { text: 'Đăng xuất', style: 'destructive', onPress: onLogout },
+                  ]
+                );
+              }}
+            >
+              <Ionicons name="log-out-outline" size={18} color="#FFE4E6" />
+              <Text style={styles.logoutBtnText}>Thoát</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {/* Thẻ thông tin nhân viên đã xác thực từ Cột K */}
+        {/* Thẻ chào mừng hiển thị Ảnh nhân viên (cột V) và "Xin chào, Họ và tên Nhân viên" (cột E) */}
         <View style={styles.profileCard}>
-          <View style={styles.profileAvatar}>
-            <Text style={styles.profileAvatarText}>
-              {profile.name ? profile.name.charAt(0).toUpperCase() : 'F'}
-            </Text>
-          </View>
+          {profile.avatar && !avatarLoadError ? (
+            <Image
+              source={{ uri: profile.avatar }}
+              style={styles.profileAvatarImg}
+              onError={() => setAvatarLoadError(true)}
+            />
+          ) : (
+            <View style={styles.profileAvatar}>
+              <Text style={styles.profileAvatarText}>
+                {profile.name
+                  ? profile.name.charAt(0).toUpperCase()
+                  : profile.email.charAt(0).toUpperCase()}
+              </Text>
+            </View>
+          )}
           <View style={styles.profileInfo}>
             <View style={styles.nameRoleRow}>
               <Text style={styles.profileName} numberOfLines={1}>
-                {profile.name || 'Nhân viên FPT'}
+                Xin chào, {profile.name || profile.email}
               </Text>
-              <View style={styles.roleBadge}>
-                <Text style={styles.roleBadgeText}>{profile.role}</Text>
+              <View
+                style={[
+                  styles.roleBadge,
+                  profile.role === 'Admin' && styles.roleBadgeAdmin,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.roleBadgeText,
+                    profile.role === 'Admin' && styles.roleBadgeTextAdmin,
+                  ]}
+                >
+                  {profile.role}
+                </Text>
               </View>
             </View>
             <Text style={styles.profileMeta} numberOfLines={1}>
-              MSNV: {profile.code || '---'} • Inside: {profile.inside || '---'}
-            </Text>
-            <Text style={styles.profileMetaSub} numberOfLines={1}>
-              {profile.partner} • {profile.block} ({profile.email})
+              {profile.email}
             </Text>
           </View>
         </View>
@@ -434,6 +479,20 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               <TouchableOpacity
                 style={styles.taskCard}
                 activeOpacity={0.85}
+                onPress={() => openTaskTab('SCHEDULE')}
+              >
+                <View style={[styles.taskIconBox, { backgroundColor: '#DBEAFE' }]}>
+                  <Ionicons name="calendar-outline" size={24} color="#2563EB" />
+                </View>
+                <Text style={styles.taskCardTitle}>Lịch Trực / Off</Text>
+                <Text style={styles.taskCardDesc}>
+                  Tra cứu & đăng ký ngày CA1 / OFF theo Block
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.taskCard}
+                activeOpacity={0.85}
                 onPress={() => openTaskTab('BYPASS')}
               >
                 <View style={[styles.taskIconBox, { backgroundColor: '#E0F2FE' }]}>
@@ -442,24 +501,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 <Text style={styles.taskCardTitle}>Bypass</Text>
                 <Text style={styles.taskCardDesc}>
                   Bỏ gông hạ tầng đối tác & dây âm tường
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.taskCard}
-                activeOpacity={0.85}
-                onPress={() => openTaskTab('CLEAR')}
-              >
-                <View style={[styles.taskIconBox, { backgroundColor: '#FEF3C7' }]}>
-                  <Ionicons
-                    name="checkmark-done-circle-outline"
-                    size={24}
-                    color="#D97706"
-                  />
-                </View>
-                <Text style={styles.taskCardTitle}>Clear Cls có SR</Text>
-                <Text style={styles.taskCardDesc}>
-                  Xử lý chuyển địa điểm, tạo nhầm HĐ
                 </Text>
               </TouchableOpacity>
 
@@ -520,33 +561,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               </TouchableOpacity>
             </View>
 
-            {/* Nút mở Cổng WebView trực tiếp */}
-            <TouchableOpacity
-              style={styles.webPortalBanner}
-              activeOpacity={0.88}
-              onPress={() => setActiveTab('WEBVIEW')}
-            >
-              <LinearGradient
-                colors={['#0072FF', '#6C3CE9']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.webPortalGradient}
-              >
-                <View style={styles.webPortalLeft}>
-                  <Ionicons name="globe-outline" size={26} color="#FFFFFF" />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.webPortalTitle}>
-                      Mở Cổng Web Apps Script Đầy Đủ
-                    </Text>
-                    <Text style={styles.webPortalSub}>
-                      Tự động điền phiên đăng nhập & đồng bộ trực tiếp trên Sheet
-                    </Text>
-                  </View>
-                </View>
-                <Ionicons name="chevron-forward" size={22} color="#FFFFFF" />
-              </LinearGradient>
-            </TouchableOpacity>
-
             {/* Lịch sử yêu cầu vừa gửi */}
             <Text style={[styles.sectionTitle, { marginTop: 22 }]}>
               YÊU CẦU VỪA GỬI TRONG PHIÊN ({history.length})
@@ -575,6 +589,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               ))
             )}
           </>
+        ) : activeTab === 'SCHEDULE' ? (
+          <ScheduleView
+            profile={profile}
+            onBack={() => setActiveTab('HOME')}
+          />
         ) : (
           /* FORM CHI TIẾT TỪNG TÁC VỤ */
           <View style={styles.taskFormCard}>
@@ -895,6 +914,93 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </View>
         </View>
       </Modal>
+
+      {/* Modal Đổi mật khẩu */}
+      <Modal visible={showChangePassModal} animationType="fade" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Đổi mật khẩu</Text>
+              <TouchableOpacity onPress={() => setShowChangePassModal(false)}>
+                <Ionicons name="close" size={24} color="#0F172A" />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.fieldLabel}>Mật khẩu hiện tại</Text>
+            <TextInput
+              style={styles.textInputField}
+              placeholder="Nhập mật khẩu cũ..."
+              placeholderTextColor="#94A3B8"
+              secureTextEntry
+              autoCapitalize="none"
+              value={oldPassInput}
+              onChangeText={setOldPassInput}
+            />
+
+            <Text style={styles.fieldLabel}>Mật khẩu mới</Text>
+            <TextInput
+              style={styles.textInputField}
+              placeholder="Tối thiểu 6 ký tự..."
+              placeholderTextColor="#94A3B8"
+              secureTextEntry
+              autoCapitalize="none"
+              value={newPassInput}
+              onChangeText={setNewPassInput}
+            />
+
+            <Text style={styles.fieldLabel}>Xác nhận mật khẩu mới</Text>
+            <TextInput
+              style={styles.textInputField}
+              placeholder="Nhập lại mật khẩu mới..."
+              placeholderTextColor="#94A3B8"
+              secureTextEntry
+              autoCapitalize="none"
+              value={confirmPassInput}
+              onChangeText={setConfirmPassInput}
+            />
+
+            <TouchableOpacity
+              activeOpacity={0.88}
+              disabled={changingPass}
+              onPress={async () => {
+                setChangingPass(true);
+                const res = await changeEmployeePassword(
+                  profile.email,
+                  oldPassInput,
+                  newPassInput,
+                  confirmPassInput
+                );
+                setChangingPass(false);
+                if (!res.ok) {
+                  Alert.alert('Lỗi', res.msg || 'Không thể đổi mật khẩu.');
+                  return;
+                }
+                setShowChangePassModal(false);
+                Alert.alert(
+                  'Thành công',
+                  'Mật khẩu của bạn đã được cập nhật thành công lên hệ thống!'
+                );
+              }}
+              style={styles.submitTaskBtn}
+            >
+              <LinearGradient
+                colors={['#00C6FF', '#0072FF', '#6C3CE9']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.submitTaskGradient}
+              >
+                {changingPass ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.submitTaskBtnText}>
+                    Lưu mật khẩu mới
+                  </Text>
+                )}
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -949,6 +1055,27 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.8,
   },
+  headerRightActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  changePassBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(56, 189, 248, 0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.45)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    gap: 4,
+  },
+  changePassBtnText: {
+    color: '#E0F2FE',
+    fontSize: 12,
+    fontWeight: '700',
+  },
   logoutBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -975,12 +1102,21 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   profileAvatar: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: '#00C6FF',
     alignItems: 'center',
     justifyContent: 'center',
+    marginRight: 12,
+  },
+  profileAvatarImg: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 2,
+    borderColor: '#00C6FF',
+    backgroundColor: '#1E293B',
     marginRight: 12,
   },
   profileAvatarText: {
@@ -1008,10 +1144,16 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 8,
   },
+  roleBadgeAdmin: {
+    backgroundColor: '#F59E0B',
+  },
   roleBadgeText: {
     color: '#070F26',
     fontSize: 10.5,
     fontWeight: '800',
+  },
+  roleBadgeTextAdmin: {
+    color: '#FFFFFF',
   },
   profileMeta: {
     color: '#E0F2FE',

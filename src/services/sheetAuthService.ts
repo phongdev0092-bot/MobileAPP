@@ -24,6 +24,32 @@ export interface StaffOption {
   block: string;
 }
 
+export interface ScheduleMemberRow {
+  mail: string;
+  hoTen: string;
+  msnv: string;
+  isMe: boolean;
+  days: Record<number, string>;
+}
+
+export interface BlockScheduleData {
+  found: boolean;
+  message?: string;
+  mail: string;
+  msnv: string;
+  hoTen: string;
+  doiTac: string;
+  block: string;
+  soLuongNhanSuTrongBlock: number;
+  lichBlock: ScheduleMemberRow[];
+}
+
+export interface SuggestEmployeeItem {
+  mail: string;
+  hoTen: string;
+  block: string;
+}
+
 export interface CheckEmailResult {
   ok: boolean;
   msg?: string;
@@ -40,7 +66,7 @@ export interface AuthResult {
 }
 
 const STORAGE_SESSION_KEY = '@nextsu_ai_session_v2';
-const STORAGE_LOCAL_PASS_PREFIX = '@nextsu_ai_colH_pass_';
+const STORAGE_LOCAL_PASS_PREFIX = '@nextsu_ai_user_pass_';
 
 /**
  * Phân tách dòng CSV chuẩn (hỗ trợ cả ô có dấu phẩy nằm trong ngoặc kép)
@@ -89,11 +115,7 @@ function parseCsvRows(csvText: string): string[][] {
 }
 
 /**
- * Tải trực tiếp dữ liệu từ Sheet Nhân sự:
- * SHEET_ID: 17QLc9SlfpPPrR-d1R2BkBxA7DmCI5ZCuhmQffP5F6pY
- * GID: 32204814
- * - Cột K (index 10): Email nhân viên
- * - Cột H (index 7): Mật khẩu (Password)
+ * Tải trực tiếp dữ liệu nhân sự
  */
 export async function fetchEmployeeSheetRows(): Promise<string[][]> {
   const url = `https://docs.google.com/spreadsheets/d/${CONFIG.EMPLOYEE_SHEET_ID}/export?format=csv&gid=${CONFIG.EMPLOYEE_SHEET_GID}&t=${Date.now()}`;
@@ -103,14 +125,14 @@ export async function fetchEmployeeSheetRows(): Promise<string[][]> {
     },
   });
   if (!response.ok) {
-    throw new Error(`Không thể kết nối dữ liệu nhân sự (HTTP ${response.status}).`);
+    throw new Error(`Không thể kết nối hệ thống xác thực (${response.status}).`);
   }
   const csvText = await response.text();
   return parseCsvRows(csvText);
 }
 
 /**
- * Gọi JSON API tới Google Apps Script (nếu đã cập nhật bản Code.gs mới có doPost)
+ * Gọi JSON API tới Google Apps Script
  */
 export async function callAppsScriptJsonApi<T = any>(
   payload: Record<string, any>
@@ -124,7 +146,6 @@ export async function callAppsScriptJsonApi<T = any>(
       body: JSON.stringify(payload),
     });
     const text = await res.text();
-    // Nếu Apps Script trả về JSON hợp lệ
     if (text && text.trim().startsWith('{')) {
       return JSON.parse(text) as T;
     }
@@ -135,22 +156,56 @@ export async function callAppsScriptJsonApi<T = any>(
 }
 
 /**
- * Bước 1: Kiểm tra Email người dùng nhập có nằm ở cột K trên Sheet không,
- * và kiểm tra cột H đã có mật khẩu hay chưa.
+ * Xác định Role từ cột AD (index 29).
+ * Mặc định tài khoản phuongnam.phongnh5@fpt.net là Admin, tất cả các tài khoản khác là User (trừ khi cột AD ghi Admin).
  */
+function resolveEmployeeRole(email: string, colADValue?: string): 'Admin' | 'User' {
+  if (email.trim().toLowerCase() === CONFIG.DEFAULT_ADMIN_EMAIL) {
+    return 'Admin';
+  }
+  if (String(colADValue || '').trim().toLowerCase() === 'admin') {
+    return 'Admin';
+  }
+  return 'User';
+}
+
+/**
+ * Tạo đối tượng EmployeeProfile từ dòng dữ liệu trên Sheet:
+ * - Cột E (index 4): Họ và tên nhân viên
+ * - Cột K (index 10): Email
+ * - Cột V (index 21): Hình ảnh nhân viên
+ * - Cột AD (index 29): Roles
+ */
+function buildProfileFromRow(row: string[], rowNumber: number, email: string): EmployeeProfile {
+  return {
+    row: rowNumber,
+    email,
+    region: row[1] || '',
+    partner: row[2] || '',
+    block: row[3] || '',
+    name: row[CONFIG.COL_INDEX_NAME] || '',
+    code: row[5] || '',
+    inside: row[6] || '',
+    phone: row[11] || '',
+    status: row[12] || '',
+    title: row[14] || '',
+    area: row[20] || '',
+    avatar: row[CONFIG.COL_INDEX_AVATAR] || '',
+    role: resolveEmployeeRole(email, row[CONFIG.COL_INDEX_ROLE]),
+  };
+}
 export async function checkEmployeeEmail(rawEmail: string): Promise<CheckEmailResult> {
   const email = String(rawEmail || '').trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return { ok: false, msg: 'Định dạng Email không hợp lệ. Vui lòng kiểm tra lại.' };
+    return { ok: false, msg: 'Địa chỉ Email không đúng định dạng.' };
   }
 
   try {
     const rows = await fetchEmployeeSheetRows();
     if (rows.length <= 1) {
-      return { ok: false, msg: 'Không đọc được danh sách nhân sự từ hệ thống.' };
+      return { ok: false, msg: 'Không thể kết nối máy chủ dữ liệu nhân sự.' };
     }
 
-    // Dòng 0 là tiêu đề, dữ liệu từ dòng 1 trở đi
     let foundRowIndex = -1;
     for (let i = 1; i < rows.length; i++) {
       const rowEmail = String(rows[i][CONFIG.COL_INDEX_EMAIL] || '')
@@ -165,32 +220,17 @@ export async function checkEmployeeEmail(rawEmail: string): Promise<CheckEmailRe
     if (foundRowIndex < 0) {
       return {
         ok: false,
-        msg: 'Email này không tồn tại ở cột K trong danh sách nhân sự FPT Telecom.',
+        msg: 'Tài khoản Email này chưa được đăng ký trong hệ thống.',
       };
     }
 
     const r = rows[foundRowIndex];
-    const colHPassword = String(r[CONFIG.COL_INDEX_PASSWORD] || '').trim();
-    const cachedColHPass = await AsyncStorage.getItem(STORAGE_LOCAL_PASS_PREFIX + email);
+    const sheetPassword = String(r[CONFIG.COL_INDEX_PASSWORD] || '').trim();
+    const cachedPass = await AsyncStorage.getItem(STORAGE_LOCAL_PASS_PREFIX + email);
 
-    const profile: EmployeeProfile = {
-      row: foundRowIndex + 1,
-      email,
-      region: r[1] || '',
-      partner: r[2] || '',
-      block: r[3] || '',
-      name: r[4] || '',
-      code: r[5] || '',
-      inside: r[6] || '',
-      phone: r[11] || '',
-      status: r[12] || '',
-      title: r[14] || '',
-      area: r[20] || '',
-      avatar: r[21] || '',
-      role: email === 'phuongnam.phongnh5@fpt.net' ? 'Admin' : 'User',
-    };
+    const profile = buildProfileFromRow(r, foundRowIndex + 1, email);
 
-    const hasPassword = Boolean(colHPassword || cachedColHPass);
+    const hasPassword = Boolean(sheetPassword || cachedPass);
 
     return {
       ok: true,
@@ -200,13 +240,13 @@ export async function checkEmployeeEmail(rawEmail: string): Promise<CheckEmailRe
   } catch (err: any) {
     return {
       ok: false,
-      msg: err?.message || 'Lỗi kết nối mạng khi kiểm tra dữ liệu nhân viên.',
+      msg: err?.message || 'Không thể kiểm tra tài khoản lúc này. Vui lòng thử lại.',
     };
   }
 }
 
 /**
- * Bước 2a: Đăng nhập bằng mật khẩu ở cột H
+ * Bước 2a: Đăng nhập bằng mật khẩu
  */
 export async function loginWithPassword(
   rawEmail: string,
@@ -219,7 +259,7 @@ export async function loginWithPassword(
     return { ok: false, msg: 'Vui lòng nhập mật khẩu của bạn.' };
   }
 
-  // 1. Thử xác thực qua Apps Script API trước (nếu đã deploy bản mới)
+  // 1. Thử xác thực qua Apps Script API trước
   const gasRes = await callAppsScriptJsonApi<AuthResult>({
     action: 'login',
     email,
@@ -237,7 +277,7 @@ export async function loginWithPassword(
     return gasRes;
   }
 
-  // 2. Xác thực trực tiếp trên cột K & cột H của Sheet
+  // 2. Xác thực trực tiếp trên dữ liệu Sheet
   const rows = await fetchEmployeeSheetRows();
   let foundRowIndex = -1;
   for (let i = 1; i < rows.length; i++) {
@@ -251,45 +291,31 @@ export async function loginWithPassword(
   }
 
   if (foundRowIndex < 0) {
-    return { ok: false, msg: 'Email không có trong danh sách nhân viên (cột K).' };
+    return { ok: false, msg: 'Tài khoản Email không tồn tại trong hệ thống.' };
   }
 
   const r = rows[foundRowIndex];
-  const colHPassword = String(r[CONFIG.COL_INDEX_PASSWORD] || '').trim();
-  const cachedColHPass = await AsyncStorage.getItem(STORAGE_LOCAL_PASS_PREFIX + email);
-  const effectiveStoredPass = colHPassword || cachedColHPass || '';
+  const sheetPassword = String(r[CONFIG.COL_INDEX_PASSWORD] || '').trim();
+  const cachedPass = await AsyncStorage.getItem(STORAGE_LOCAL_PASS_PREFIX + email);
+  // Ưu tiên mật khẩu vừa được cập nhật hoặc mật khẩu trên Sheet
+  const effectiveStoredPass = cachedPass || sheetPassword || '';
 
   if (!effectiveStoredPass) {
     return {
       ok: false,
       needCreate: true,
-      msg: 'Tài khoản chưa có mật khẩu ở cột H, vui lòng khởi tạo mật khẩu.',
+      msg: 'Tài khoản chưa tạo mật khẩu. Vui lòng thiết lập mật khẩu mới.',
     };
   }
 
-  if (effectiveStoredPass !== pwd) {
+  if (effectiveStoredPass !== pwd && sheetPassword !== pwd) {
     return {
       ok: false,
-      msg: 'Mật khẩu không chính xác. Vui lòng kiểm tra lại.',
+      msg: 'Mật khẩu không chính xác. Vui lòng thử lại.',
     };
   }
 
-  const profile: EmployeeProfile = {
-    row: foundRowIndex + 1,
-    email,
-    region: r[1] || '',
-    partner: r[2] || '',
-    block: r[3] || '',
-    name: r[4] || '',
-    code: r[5] || '',
-    inside: r[6] || '',
-    phone: r[11] || '',
-    status: r[12] || '',
-    title: r[14] || '',
-    area: r[20] || '',
-    avatar: r[21] || '',
-    role: email === 'phuongnam.phongnh5@fpt.net' ? 'Admin' : 'User',
-  };
+  const profile = buildProfileFromRow(r, foundRowIndex + 1, email);
 
   const token = `NEXTSU_${Date.now()}_${Math.random().toString(36).slice(2)}`;
   await AsyncStorage.setItem(
@@ -301,7 +327,7 @@ export async function loginWithPassword(
 }
 
 /**
- * Bước 2b: Khởi tạo mật khẩu lần đầu và lưu vào cột H trên Sheet
+ * Bước 2b: Khởi tạo mật khẩu lần đầu
  */
 export async function createFirstPassword(
   rawEmail: string,
@@ -313,18 +339,17 @@ export async function createFirstPassword(
   const cfm = String(confirm || '');
 
   if (pwd.length < 6) {
-    return { ok: false, msg: 'Mật khẩu khởi tạo phải có tối thiểu 6 ký tự.' };
+    return { ok: false, msg: 'Mật khẩu phải có tối thiểu 6 ký tự.' };
   }
   if (pwd !== cfm) {
-    return { ok: false, msg: 'Mật khẩu nhập lại không khớp.' };
+    return { ok: false, msg: 'Mật khẩu xác nhận không trùng khớp.' };
   }
 
   const check = await checkEmployeeEmail(email);
   if (!check.ok || !check.profile) {
-    return { ok: false, msg: check.msg || 'Không tìm thấy nhân viên.' };
+    return { ok: false, msg: check.msg || 'Không tìm thấy tài khoản.' };
   }
 
-  // Gửi yêu cầu ghi mật khẩu vào cột H lên Google Apps Script
   const gasRes = await callAppsScriptJsonApi<AuthResult>({
     action: 'setPassword',
     email,
@@ -332,7 +357,6 @@ export async function createFirstPassword(
     confirm: cfm,
   });
 
-  // Lưu đồng bộ trên thiết bị và phiên đăng nhập
   await AsyncStorage.setItem(STORAGE_LOCAL_PASS_PREFIX + email, pwd);
 
   const token =
@@ -352,8 +376,94 @@ export async function createFirstPassword(
 }
 
 /**
- * Lấy danh sách nhân sự Active (Cột C = Đối tác, Cột D = Block, Cột G = Nhân viên, Cột M = Active)
- * cho tính năng Phân Công Tay
+ * Bước 2c: Đổi mật khẩu (nhập mật khẩu cũ, mật khẩu mới và xác nhận -> cập nhật đúng vào ô mật khẩu của dòng nhân viên trên Sheet)
+ */
+export async function changeEmployeePassword(
+  rawEmail: string,
+  oldPassword: string,
+  newPassword: string,
+  confirmPassword: string
+): Promise<AuthResult> {
+  const email = String(rawEmail || '').trim().toLowerCase();
+  const oldPwd = String(oldPassword || '');
+  const newPwd = String(newPassword || '');
+  const cfmPwd = String(confirmPassword || '');
+
+  if (!oldPwd) {
+    return { ok: false, msg: 'Vui lòng nhập mật khẩu hiện tại.' };
+  }
+  if (newPwd.length < 6) {
+    return { ok: false, msg: 'Mật khẩu mới phải có ít nhất 6 ký tự.' };
+  }
+  if (newPwd === oldPwd) {
+    return { ok: false, msg: 'Mật khẩu mới phải khác với mật khẩu hiện tại.' };
+  }
+  if (newPwd !== cfmPwd) {
+    return { ok: false, msg: 'Mật khẩu xác nhận không trùng khớp.' };
+  }
+
+  // 1. Gọi Apps Script API để cập nhật trực tiếp vào đúng ô của dòng nhân viên trên Sheet
+  const gasRes = await callAppsScriptJsonApi<AuthResult>({
+    action: 'changePassword',
+    email,
+    oldPassword: oldPwd,
+    newPassword: newPwd,
+    confirm: cfmPwd,
+  });
+
+  if (gasRes && gasRes.ok === false) {
+    return { ok: false, msg: gasRes.msg || 'Mật khẩu hiện tại không đúng.' };
+  }
+
+  // 2. Đối chiếu mật khẩu hiện tại từ Sheet / bộ nhớ
+  const rows = await fetchEmployeeSheetRows();
+  let foundRowIndex = -1;
+  for (let i = 1; i < rows.length; i++) {
+    const rowEmail = String(rows[i][CONFIG.COL_INDEX_EMAIL] || '')
+      .trim()
+      .toLowerCase();
+    if (rowEmail === email) {
+      foundRowIndex = i;
+      break;
+    }
+  }
+
+  if (foundRowIndex < 0) {
+    return { ok: false, msg: 'Tài khoản không tồn tại trong hệ thống.' };
+  }
+
+  const r = rows[foundRowIndex];
+  const sheetPassword = String(r[CONFIG.COL_INDEX_PASSWORD] || '').trim();
+  const cachedPass = await AsyncStorage.getItem(STORAGE_LOCAL_PASS_PREFIX + email);
+  const currentStoredPass = cachedPass || sheetPassword || '';
+
+  if (currentStoredPass && currentStoredPass !== oldPwd && sheetPassword !== oldPwd) {
+    return { ok: false, msg: 'Mật khẩu hiện tại không chính xác.' };
+  }
+
+  // Lưu mật khẩu mới và cập nhật phiên đăng nhập
+  await AsyncStorage.setItem(STORAGE_LOCAL_PASS_PREFIX + email, newPwd);
+
+  const profile = buildProfileFromRow(r, foundRowIndex + 1, email);
+
+  const token =
+    gasRes?.token || `NEXTSU_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  await AsyncStorage.setItem(
+    STORAGE_SESSION_KEY,
+    JSON.stringify({ token, profile, password: newPwd })
+  );
+
+  return {
+    ok: true,
+    msg: 'Đã cập nhật mật khẩu mới thành công!',
+    token,
+    profile,
+  };
+}
+
+/**
+ * Lấy danh sách nhân sự đang hoạt động cho Phân Công Tay
  */
 export async function fetchActiveStaffList(): Promise<StaffOption[]> {
   try {
@@ -396,3 +506,342 @@ export async function clearSavedSession(): Promise<void> {
     await AsyncStorage.removeItem(STORAGE_SESSION_KEY);
   } catch {}
 }
+
+/* ===================== HỆ THỐNG ĐĂNG KÝ LỊCH TRỰC / OFF THEO BLOCK ===================== */
+
+const STORAGE_SCHEDULE_LOCAL_KEY = '@nextsu_ai_schedule_overrides_v1';
+
+function normalizeBlockStr(s: string): string {
+  return String(s || '')
+    .normalize('NFC')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+export function getDaysInMonth(month: number, year: number): number {
+  return new Date(Number(year), Number(month), 0).getDate();
+}
+
+/**
+ * Tải trực tiếp Sheet Lịch Trực (1qd8O1bqbtHmbPUO_HhZv07YS9c27bo1QMWh4yvmQr2U, gid=0)
+ */
+export async function fetchScheduleSheetRows(): Promise<string[][]> {
+  const url = `https://docs.google.com/spreadsheets/d/${CONFIG.SCHEDULE_SHEET_ID}/export?format=csv&gid=${CONFIG.SCHEDULE_SHEET_GID}&t=${Date.now()}`;
+  const response = await fetch(url, {
+    headers: { 'Cache-Control': 'no-cache' },
+  });
+  if (!response.ok) {
+    throw new Error(`Không thể tải bảng Lịch trực (${response.status}).`);
+  }
+  const csvText = await response.text();
+  return parseCsvRows(csvText);
+}
+
+/**
+ * Lấy danh sách gợi ý nhân sự Active (mail, hoTen, block) để tìm kiếm trong Lịch trực
+ */
+export async function fetchScheduleSuggestions(): Promise<SuggestEmployeeItem[]> {
+  try {
+    const rows = await fetchEmployeeSheetRows();
+    const list: SuggestEmployeeItem[] = [];
+    for (let r = 1; r < rows.length; r++) {
+      const row = rows[r];
+      const mail = String(row[CONFIG.COL_INDEX_EMAIL] || '').trim();
+      const status = String(row[12] || '').trim().toUpperCase();
+      if (!mail || status !== 'ACTIVE') continue;
+      list.push({
+        mail,
+        hoTen: String(row[CONFIG.COL_INDEX_NAME] || '').trim(),
+        block: String(row[3] || '').trim(),
+      });
+    }
+    return list;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Tra cứu thông tin nhân viên + Lịch trực của cả Block trong tháng/năm
+ */
+export async function fetchBlockSchedule(
+  rawEmail: string,
+  thang: number,
+  nam: number
+): Promise<BlockScheduleData> {
+  const email = String(rawEmail || '').trim().toLowerCase();
+  if (!email) {
+    return {
+      found: false,
+      message: 'Vui lòng nhập email nhân viên.',
+      mail: '',
+      msnv: '',
+      hoTen: '',
+      doiTac: '',
+      block: '',
+      soLuongNhanSuTrongBlock: 0,
+      lichBlock: [],
+    };
+  }
+
+  try {
+    const [empRows, schedRows] = await Promise.all([
+      fetchEmployeeSheetRows(),
+      fetchScheduleSheetRows(),
+    ]);
+
+    // Xây dựng map Nhân sự theo mail (nguồn chuẩn xác định Block, Họ tên, MSNV, Đối tác)
+    const empMap: Record<
+      string,
+      {
+        mail: string;
+        msnv: string;
+        hoTen: string;
+        doiTac: string;
+        block: string;
+        status: string;
+      }
+    > = {};
+
+    for (let r = 1; r < empRows.length; r++) {
+      const row = empRows[r];
+      const mailGoc = String(row[CONFIG.COL_INDEX_EMAIL] || '').trim();
+      const mailKey = mailGoc.toLowerCase();
+      if (!mailKey) continue;
+      empMap[mailKey] = {
+        mail: mailGoc,
+        msnv: String(row[5] || '').trim(),
+        hoTen: String(row[CONFIG.COL_INDEX_NAME] || '').trim(),
+        doiTac: String(row[2] || '').trim(),
+        block: String(row[3] || '').trim(),
+        status: String(row[12] || '').trim().toUpperCase(),
+      };
+    }
+
+    const nv = empMap[email];
+    if (!nv) {
+      return {
+        found: false,
+        message: 'Không tìm thấy nhân viên với email này trong danh sách Nhân Sự.',
+        mail: '',
+        msnv: '',
+        hoTen: '',
+        doiTac: '',
+        block: '',
+        soLuongNhanSuTrongBlock: 0,
+        lichBlock: [],
+      };
+    }
+
+    const targetBlockNorm = normalizeBlockStr(nv.block);
+    let soLuongNhanSuTrongBlock = 0;
+    for (const k in empMap) {
+      if (
+        normalizeBlockStr(empMap[k].block) === targetBlockNorm &&
+        empMap[k].status === 'ACTIVE'
+      ) {
+        soLuongNhanSuTrongBlock++;
+      }
+    }
+
+    // Đọc các thay đổi vừa lưu tạm trên thiết bị (để giao diện phản hồi tức thì)
+    let localOverrides: Record<string, Record<number, string>> = {};
+    try {
+      const rawLocal = await AsyncStorage.getItem(STORAGE_SCHEDULE_LOCAL_KEY);
+      if (rawLocal) localOverrides = JSON.parse(rawLocal);
+    } catch {}
+
+    const lichBlock: ScheduleMemberRow[] = [];
+    for (let r = 1; r < schedRows.length; r++) {
+      const row = schedRows[r];
+      const rowMailGoc = String(row[0] || '').trim();
+      const rowMail = rowMailGoc.toLowerCase();
+      if (!rowMail) continue;
+
+      const rowThang = Number(row[36]); // Cột AK (index 36)
+      const rowNam = Number(row[37]);   // Cột AL (index 37)
+      if (rowThang !== Number(thang) || rowNam !== Number(nam)) continue;
+
+      const infoNv = empMap[rowMail];
+      const rowBlock = infoNv
+        ? normalizeBlockStr(infoNv.block)
+        : normalizeBlockStr(row[4]);
+
+      if (rowBlock !== targetBlockNorm) continue;
+
+      const days: Record<number, string> = {};
+      for (let d = 1; d <= 31; d++) {
+        const v = row[5 + (d - 1)]; // Cột F (index 5) là Ngày 1
+        days[d] = v ? String(v).trim().toUpperCase() : '';
+      }
+
+      const overrideKey = `${rowMail}_${Number(thang)}_${Number(nam)}`;
+      if (localOverrides[overrideKey]) {
+        Object.keys(localOverrides[overrideKey]).forEach((dayKey) => {
+          days[Number(dayKey)] = localOverrides[overrideKey][Number(dayKey)];
+        });
+      }
+
+      lichBlock.push({
+        mail: infoNv ? infoNv.mail : rowMailGoc,
+        hoTen: infoNv ? infoNv.hoTen : String(row[2] || '').trim(),
+        msnv: infoNv ? infoNv.msnv : String(row[1] || '').trim(),
+        isMe: rowMail === email,
+        days,
+      });
+    }
+
+    // Nếu nhân viên đang tra cứu vừa đăng ký ở local mà chưa có dòng trên CSV export, bổ sung vào bảng hiển thị
+    const myOverrideKey = `${email}_${Number(thang)}_${Number(nam)}`;
+    if (
+      !lichBlock.some((item) => item.isMe) &&
+      localOverrides[myOverrideKey]
+    ) {
+      lichBlock.push({
+        mail: nv.mail,
+        hoTen: nv.hoTen,
+        msnv: nv.msnv,
+        isMe: true,
+        days: localOverrides[myOverrideKey],
+      });
+    }
+
+    return {
+      found: true,
+      mail: nv.mail,
+      msnv: nv.msnv,
+      hoTen: nv.hoTen,
+      doiTac: nv.doiTac,
+      block: nv.block,
+      soLuongNhanSuTrongBlock,
+      lichBlock,
+    };
+  } catch (err: any) {
+    return {
+      found: false,
+      message: err?.message || 'Lỗi khi tải dữ liệu Lịch trực.',
+      mail: '',
+      msnv: '',
+      hoTen: '',
+      doiTac: '',
+      block: '',
+      soLuongNhanSuTrongBlock: 0,
+      lichBlock: [],
+    };
+  }
+}
+
+/**
+ * Kiểm tra xem ngày `day` trong Block đã có nhân sự khác đăng ký OFF ('O') chưa
+ */
+export function checkDayConflictFromBlockData(
+  blockData: BlockScheduleData,
+  day: number
+): { coRangBuoc: boolean; allowO: boolean; nguoiDaOff: string | null } {
+  if (blockData.soLuongNhanSuTrongBlock <= 1) {
+    return { coRangBuoc: false, allowO: true, nguoiDaOff: null };
+  }
+
+  for (const member of blockData.lichBlock) {
+    if (member.isMe) continue;
+    const val = String(member.days[day] || '').trim().toUpperCase();
+    if (val === 'O') {
+      return {
+        coRangBuoc: true,
+        allowO: false,
+        nguoiDaOff: member.hoTen || member.mail,
+      };
+    }
+  }
+
+  return { coRangBuoc: true, allowO: true, nguoiDaOff: null };
+}
+
+/**
+ * Lưu đăng ký ngày CA1 hoặc O cho nhân viên
+ * - Tự động điền mặc định CA1 cho các ngày còn trống trong phạm vi số ngày thực của tháng
+ * - Ghi đè ngày đang chọn bằng giá trị (CA1 hoặc O)
+ */
+export async function submitScheduleRegistration(
+  rawEmail: string,
+  thang: number,
+  nam: number,
+  day: number,
+  value: 'CA1' | 'O',
+  matKhauBypass?: string,
+  currentBlockData?: BlockScheduleData
+): Promise<{ success: boolean; message: string }> {
+  const email = String(rawEmail || '').trim().toLowerCase();
+  const soNgayThuc = getDaysInMonth(thang, nam);
+
+  if (day < 1 || day > soNgayThuc) {
+    return {
+      success: false,
+      message: `Ngày không hợp lệ. Tháng ${thang}/${nam} chỉ có ${soNgayThuc} ngày.`,
+    };
+  }
+
+  // Kiểm tra xung đột ngày OFF trong cùng Block (nếu không nhập mật khẩu CBQL)
+  if (currentBlockData && value === 'O') {
+    const conflict = checkDayConflictFromBlockData(currentBlockData, day);
+    if (conflict.coRangBuoc && !conflict.allowO && !matKhauBypass?.trim()) {
+      return {
+        success: false,
+        message: `Đã có nhân sự "${conflict.nguoiDaOff}" đăng ký OFF ngày ${day}. Ngày này chỉ có thể chọn CA1 hoặc nhập mật khẩu CBQL để cho phép trùng OFF.`,
+      };
+    }
+  }
+
+  // 1. Gửi lên Google Apps Script API
+  const gasRes = await callAppsScriptJsonApi<{
+    success?: boolean;
+    message?: string;
+  }>({
+    action: 'dangKyNgayOff',
+    email,
+    thang: Number(thang),
+    nam: Number(nam),
+    day: Number(day),
+    value,
+    matKhauBypass: matKhauBypass || '',
+  });
+
+  if (gasRes && gasRes.success === false && gasRes.message) {
+    return { success: false, message: gasRes.message };
+  }
+
+  // 2. Lưu trạng thái tức thì để bảng Lịch Block cập nhật ngay lập tức
+  try {
+    const rawLocal = await AsyncStorage.getItem(STORAGE_SCHEDULE_LOCAL_KEY);
+    const localOverrides: Record<string, Record<number, string>> = rawLocal
+      ? JSON.parse(rawLocal)
+      : {};
+    const key = `${email}_${Number(thang)}_${Number(nam)}`;
+    const existingDays =
+      currentBlockData?.lichBlock.find((m) => m.isMe)?.days ||
+      localOverrides[key] ||
+      {};
+
+    const updatedDays: Record<number, string> = { ...existingDays };
+    for (let d = 1; d <= soNgayThuc; d++) {
+      if (!String(updatedDays[d] || '').trim()) {
+        updatedDays[d] = 'CA1';
+      }
+    }
+    updatedDays[day] = value;
+    localOverrides[key] = updatedDays;
+    await AsyncStorage.setItem(
+      STORAGE_SCHEDULE_LOCAL_KEY,
+      JSON.stringify(localOverrides)
+    );
+  } catch {}
+
+  return {
+    success: true,
+    message:
+      gasRes?.message ||
+      `Đã lưu thành công: Ngày ${day}/${thang}/${nam} = ${value}`,
+  };
+}
+

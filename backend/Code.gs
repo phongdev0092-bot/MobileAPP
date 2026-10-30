@@ -15,8 +15,11 @@ const CONFIG = {
   SHEET_ID: '17QLc9SlfpPPrR-d1R2BkBxA7DmCI5ZCuhmQffP5F6pY',
   GID: 32204814,               // gid của tab dữ liệu nhân viên
   HEADER_ROW: 1,               // dòng tiêu đề
+  COL_NAME: 5,                 // Cột E (1 = A -> 5 = E): Họ và tên nhân viên
   COL_PASS: 8,                 // Cột H (1 = A -> 8 = H): cột lưu mật khẩu
   COL_EMAIL: 11,               // Cột K (1 = A -> 11 = K): cột Email đăng nhập
+  COL_AVATAR: 22,              // Cột V (1 = A -> 22 = V): cột lưu hình ảnh nhân viên
+  COL_ROLE: 30,                // Cột AD (1 = A -> 30 = AD): cột lưu Roles (User / Admin)
   SESSION_TTL: 6 * 60 * 60,    // giây (tối đa 21600 với CacheService)
   MAX_FAIL: 5,                 // sai tối đa
   LOCK_SEC: 10 * 60,           // khóa tạm (giây)
@@ -115,6 +118,23 @@ const RESETMAC = {
   RESULT_NEW: 'Chưa cập nhật'
 };
 
+// Sheet Lịch trực / Off theo Block
+const LICHTRUC = {
+  SHEET_ID: '1qd8O1bqbtHmbPUO_HhZv07YS9c27bo1QMWh4yvmQr2U',
+  GID: 0,
+  COL_MAIL: 1,      // A - Mail
+  COL_MSNV: 2,      // B - MSNV
+  COL_HOTEN: 3,     // C - Họ và tên
+  COL_DOITAC: 4,    // D - Đối tác
+  COL_BLOCK: 5,     // E - Block
+  COL_DAY1: 6,      // F -> Ngày 1 (F..AJ = 1..31)
+  COL_MONTH: 37,    // AK -> Tháng
+  COL_YEAR: 38,     // AL -> Năm
+  MAX_DAYS: 31,
+  VAL_OFF: 'O',
+  VAL_CA1: 'CA1'
+};
+
 /** Trang chính Web hoặc JSON API khi truyền ?api=1 */
 function doGet(e) {
   if (e && e.parameter && e.parameter.action) {
@@ -143,6 +163,7 @@ function handleJsonApi_(req) {
     case 'checkEmail':       res = apiCheckEmail(req.email); break;
     case 'login':            res = apiLogin(req.email, req.password); break;
     case 'setPassword':      res = apiSetPassword(req.email, req.password, req.confirm); break;
+    case 'changePassword':   res = apiChangePassword(req.email, req.oldPassword, req.newPassword, req.confirm); break;
     case 'session':          res = apiSession(req.token); break;
     case 'logout':           res = apiLogout(req.token); break;
     case 'bypassSubmit':     res = apiBypassSubmit(req.token, req.shd, req.cause2); break;
@@ -162,6 +183,12 @@ function handleJsonApi_(req) {
     case 'adminList':        res = apiAdminList(req.token); break;
     case 'adminSave':        res = apiAdminSave(req.token, req.data); break;
     case 'adminDelete':      res = apiAdminDelete(req.token, req.id); break;
+    // API Lịch trực / Off theo Block
+    case 'getThongTinNhanVien': res = getThongTinNhanVien(req.email); break;
+    case 'getLichTrucBlock':    res = getLichTrucBlock(req.email, req.thang, req.nam); break;
+    case 'kiemTraNgay':         res = kiemTraNgay(req.email, req.thang, req.nam, req.day); break;
+    case 'layDanhSachGoiY':     res = layDanhSachGoiY(); break;
+    case 'dangKyNgayOff':       res = dangKyNgayOff(req.email, req.thang, req.nam, req.day, req.value, req.matKhauBypass); break;
     default:                 res = { ok: false, msg: 'Action không hợp lệ: ' + action };
   }
   return jsonOut_(res);
@@ -239,14 +266,16 @@ function apiLogin(email, password) {
     }
 
     clearFail_(email);
+    const assignedRole = ensureEmployeeRoleColAD_(emp);
+    emp.role = assignedRole;
     updateEmployeeCache_(email, emp);
-    return { ok: true, token: newSession_(email, sessionHash), profile: withRole_(emp.profile, emp.role) };
+    return { ok: true, token: newSession_(email, sessionHash), profile: withRole_(emp.profile, assignedRole) };
   } catch (e) {
     return serverError_(e);
   }
 }
 
-/** Bước 2b: khởi tạo mật khẩu lần đầu và lưu vào cột H trên sheet nhân sự */
+/** Bước 2b: khởi tạo mật khẩu lần đầu và lưu vào cột H trên sheet nhân sự (đồng thời gán Role vào cột AD) */
 function apiSetPassword(email, password, confirm) {
   const lock = LockService.getScriptLock();
   let locked = false;
@@ -270,13 +299,83 @@ function apiSetPassword(email, password, confirm) {
       return { ok: false, msg: 'Mật khẩu nhập lại không khớp.' };
     }
 
-    // Lưu mật khẩu vào cột H (cột 8) của dòng nhân viên trên sheet nhân sự
-    setEmployeePassColH_(emp.row, password);
+    // Lưu mật khẩu vào cột H (cột 8) và Role vào cột AD (cột 30)
+    const assignedRole = isDefaultAdmin_(email) ? 'Admin' : (emp.role === 'Admin' ? 'Admin' : 'User');
+    setEmployeePassAndRole_(emp.row, password, assignedRole);
     emp.storedPass = password;
+    emp.role = assignedRole;
     updateEmployeeCache_(email, emp);
 
     const sessionHash = hash_('plain', password);
-    return { ok: true, token: newSession_(email, sessionHash), profile: withRole_(emp.profile, emp.role) };
+    return { ok: true, token: newSession_(email, sessionHash), profile: withRole_(emp.profile, assignedRole) };
+  } catch (e) {
+    return serverError_(e);
+  } finally {
+    if (locked) { try { lock.releaseLock(); } catch (x) {} }
+  }
+}
+
+/** Bước 2c: Đổi mật khẩu (kiểm tra mật khẩu cũ đang có và cập nhật mật khẩu mới vào đúng ô trên dòng của nhân viên đó) */
+function apiChangePassword(email, oldPassword, newPassword, confirm) {
+  const lock = LockService.getScriptLock();
+  let locked = false;
+  try {
+    lock.waitLock(15000);
+    locked = true;
+    email = normEmail_(email);
+    oldPassword = String(oldPassword || '');
+    newPassword = String(newPassword || '');
+    confirm = String(confirm || '');
+
+    const emp = findEmployeeFresh_(email);
+    if (!emp) return { ok: false, msg: 'Tài khoản không tồn tại trong hệ thống.' };
+    const blocked = checkBlocked_(emp);
+    if (blocked) return { ok: false, msg: blocked };
+
+    const lockMsg = lockMessage_(email);
+    if (lockMsg) return { ok: false, msg: lockMsg };
+
+    if (!emp.storedPass) {
+      return { ok: false, msg: 'Tài khoản chưa có mật khẩu. Vui lòng khởi tạo mật khẩu trước.', needCreate: true };
+    }
+
+    // Kiểm tra mật khẩu cũ
+    let oldMatched = false;
+    const sp = splitStored_(emp.storedPass);
+    if (sp.hash) {
+      if (hash_(sp.salt, oldPassword) === sp.hash) oldMatched = true;
+    } else {
+      if (emp.storedPass === oldPassword) oldMatched = true;
+    }
+
+    if (!oldMatched) {
+      const left = registerFail_(email);
+      return { ok: false, msg: left > 0 ? 'Mật khẩu hiện tại không đúng. Còn ' + left + ' lần thử.' : lockMessage_(email) };
+    }
+
+    if (newPassword.length < CONFIG.MIN_PASSWORD) {
+      return { ok: false, msg: 'Mật khẩu mới phải từ ' + CONFIG.MIN_PASSWORD + ' ký tự trở lên.' };
+    }
+    if (newPassword === oldPassword) {
+      return { ok: false, msg: 'Mật khẩu mới phải khác mật khẩu hiện tại.' };
+    }
+    if (newPassword !== confirm) {
+      return { ok: false, msg: 'Mật khẩu xác nhận không khớp.' };
+    }
+
+    clearFail_(email);
+    // Cập nhật mật khẩu mới vào đúng ô trên dòng nhân sự của người dùng
+    setEmployeePassColH_(emp.row, newPassword);
+    emp.storedPass = newPassword;
+    updateEmployeeCache_(email, emp);
+
+    const sessionHash = hash_('plain', newPassword);
+    return {
+      ok: true,
+      msg: 'Đổi mật khẩu thành công.',
+      token: newSession_(email, sessionHash),
+      profile: withRole_(emp.profile, emp.role)
+    };
   } catch (e) {
     return serverError_(e);
   } finally {
@@ -289,6 +388,41 @@ function setEmployeePassColH_(rowNumber, value) {
   const sh = getDataSheet_();
   sh.getRange(rowNumber, CONFIG.COL_PASS).setNumberFormat('@').setValue(value);
   SpreadsheetApp.flush();
+}
+
+/** Ghi đồng thời mật khẩu vào cột H (8) và Role vào cột AD (30) */
+function setEmployeePassAndRole_(rowNumber, passValue, roleValue) {
+  const sh = getDataSheet_();
+  if (sh.getMaxColumns() < CONFIG.COL_ROLE) {
+    sh.insertColumnsAfter(sh.getMaxColumns(), CONFIG.COL_ROLE - sh.getMaxColumns());
+  }
+  const hdrCell = sh.getRange(CONFIG.HEADER_ROW, CONFIG.COL_ROLE);
+  if (!String(hdrCell.getValue() || '').trim()) {
+    hdrCell.setValue('Roles');
+  }
+  sh.getRange(rowNumber, CONFIG.COL_PASS).setNumberFormat('@').setValue(passValue);
+  sh.getRange(rowNumber, CONFIG.COL_ROLE).setNumberFormat('@').setValue(roleValue);
+  SpreadsheetApp.flush();
+}
+
+/** Đảm bảo cột AD (30) có lưu Role (phuongnam.phongnh5@fpt.net mặc định là Admin, còn lại là User) */
+function ensureEmployeeRoleColAD_(emp) {
+  const targetRole = isDefaultAdmin_(emp.profile.email) ? 'Admin' : (emp.role === 'Admin' ? 'Admin' : 'User');
+  if (emp.rawRoleColAD !== targetRole) {
+    try {
+      const sh = getDataSheet_();
+      if (sh.getMaxColumns() < CONFIG.COL_ROLE) {
+        sh.insertColumnsAfter(sh.getMaxColumns(), CONFIG.COL_ROLE - sh.getMaxColumns());
+      }
+      const hdrCell = sh.getRange(CONFIG.HEADER_ROW, CONFIG.COL_ROLE);
+      if (!String(hdrCell.getValue() || '').trim()) {
+        hdrCell.setValue('Roles');
+      }
+      sh.getRange(emp.row, CONFIG.COL_ROLE).setNumberFormat('@').setValue(targetRole);
+      SpreadsheetApp.flush();
+    } catch (e) {}
+  }
+  return targetRole;
 }
 
 /** Khôi phục phiên đăng nhập từ token lưu ở thiết bị */
@@ -361,19 +495,29 @@ function findEmployeeFresh_(email) {
   if (idx < 0) return null;
 
   const rowNumber = CONFIG.HEADER_ROW + 1 + idx;
-  const row = sh.getRange(rowNumber, 1, 1, lastCol).getDisplayValues()[0];
+  const width = Math.max(lastCol, CONFIG.COL_ROLE);
+  const row = sh.getRange(rowNumber, 1, 1, width).getDisplayValues()[0];
   const get = function (name) { const c = col(name); return c < 0 ? '' : String(row[c] || '').trim(); };
 
   const storedPass = String(row[cPass] || '').trim();
+  const rawRoleColAD = String(row[CONFIG.COL_ROLE - 1] || '').trim();
+  const resolvedRole = isDefaultAdmin_(email)
+    ? 'Admin'
+    : (rawRoleColAD.toLowerCase() === 'admin' ? 'Admin' : 'User');
+
+  // Cột E (index 4) là Họ và tên nhân viên, Cột V (index 21) là Hình ảnh nhân viên
+  const empName = String(row[CONFIG.COL_NAME - 1] || get('Họ Tên NV') || '').trim();
+  const empAvatar = String(row[CONFIG.COL_AVATAR - 1] || get('Hình ảnh') || '').trim();
 
   return {
     row: rowNumber,
     storedPass: storedPass,
-    role: isDefaultAdmin_(email) ? 'Admin' : 'User',
+    rawRoleColAD: rawRoleColAD,
+    role: resolvedRole,
     lastWorkDay: get('Ngày làm Việc Cuối'),
     profile: {
       email: email,
-      name: get('Họ Tên NV'),
+      name: empName,
       code: get('Mã NV'),
       title: get('Chức danh'),
       region: get('Vùng'),
@@ -382,7 +526,8 @@ function findEmployeeFresh_(email) {
       phone: get('Số điện thoại'),
       area: get('Vị trí phụ trách'),
       inside: get('Inside Account'),
-      avatar: get('Hình ảnh')
+      avatar: empAvatar,
+      role: resolvedRole
     }
   };
 }
@@ -1309,4 +1454,299 @@ function isEmail_(s) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s); }
 function serverError_(e) {
   console.error(e);
   return { ok: false, msg: 'Lỗi hệ thống, vui lòng thử lại.' };
+}
+
+
+/* ===================== HỆ THỐNG ĐĂNG KÝ LỊCH TRỰC / OFF THEO BLOCK ===================== */
+
+function getLichTrucSheet_() {
+  const ss = SpreadsheetApp.openById(LICHTRUC.SHEET_ID);
+  const sh = ss.getSheets().filter(function (s) { return s.getSheetId() === LICHTRUC.GID; })[0];
+  if (!sh) throw new Error('Không tìm thấy sheet Lịch trực với GID ' + LICHTRUC.GID);
+  return sh;
+}
+
+function chuanHoaChuoiLT_(s) {
+  return String(s || '')
+    .normalize('NFC')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function soNgayTrongThangLT_(thang, nam) {
+  return new Date(Number(nam), Number(thang), 0).getDate();
+}
+
+function layMapNhanSuLT_() {
+  const sh = getDataSheet_();
+  const data = sh.getDataRange().getValues();
+  const map = {};
+  for (let r = 1; r < data.length; r++) {
+    const mailGoc = data[r][CONFIG.COL_EMAIL - 1];
+    const mailChuanHoa = normEmail_(mailGoc);
+    if (!mailChuanHoa) continue;
+    map[mailChuanHoa] = {
+      mail: mailGoc,
+      msnv: data[r][5],   // F - MSNV
+      hoTen: data[r][4],  // E - Họ và tên
+      doiTac: String(data[r][2] || '').trim(), // C - Đối tác
+      block: String(data[r][3] || '').trim(),  // D - Block
+      status: String(data[r][12] || '').trim().toUpperCase() // M - Status
+    };
+  }
+  return map;
+}
+
+function timNhanVienTheoMailLT_(email) {
+  const map = layMapNhanSuLT_();
+  const nv = map[normEmail_(email)];
+  if (!nv) return { found: false };
+  return {
+    found: true,
+    mail: nv.mail,
+    msnv: nv.msnv,
+    hoTen: nv.hoTen,
+    doiTac: nv.doiTac,
+    block: nv.block,
+    status: nv.status
+  };
+}
+
+function demSoNhanVienTrongBlockLT_(block) {
+  const map = layMapNhanSuLT_();
+  const blockChuanHoa = chuanHoaChuoiLT_(block);
+  let count = 0;
+  for (const key in map) {
+    const nv = map[key];
+    if (chuanHoaChuoiLT_(nv.block) === blockChuanHoa && nv.status === 'ACTIVE') count++;
+  }
+  return count;
+}
+
+function timHoacTaoDongLT_(sheet, nv, thang, nam) {
+  const data = sheet.getDataRange().getValues();
+  const mailChuanHoa = normEmail_(nv.mail);
+
+  for (let r = 1; r < data.length; r++) {
+    const row = data[r];
+    const rowMail = normEmail_(row[LICHTRUC.COL_MAIL - 1]);
+    const rowThang = Number(row[LICHTRUC.COL_MONTH - 1]);
+    const rowNam = Number(row[LICHTRUC.COL_YEAR - 1]);
+    if (rowMail === mailChuanHoa && rowThang === Number(thang) && rowNam === Number(nam)) {
+      const rowIndex = r + 1;
+      sheet.getRange(rowIndex, LICHTRUC.COL_MSNV, 1, 4)
+           .setValues([[nv.msnv, nv.hoTen, nv.doiTac, nv.block]]);
+      return rowIndex;
+    }
+  }
+
+  const newRowIndex = sheet.getLastRow() + 1;
+  const newRow = new Array(LICHTRUC.COL_YEAR).fill('');
+  newRow[LICHTRUC.COL_MAIL - 1]   = nv.mail;
+  newRow[LICHTRUC.COL_MSNV - 1]   = nv.msnv;
+  newRow[LICHTRUC.COL_HOTEN - 1]  = nv.hoTen;
+  newRow[LICHTRUC.COL_DOITAC - 1] = nv.doiTac;
+  newRow[LICHTRUC.COL_BLOCK - 1]  = nv.block;
+  newRow[LICHTRUC.COL_MONTH - 1]  = thang;
+  newRow[LICHTRUC.COL_YEAR - 1]   = nam;
+  sheet.getRange(newRowIndex, 1, 1, newRow.length).setValues([newRow]);
+  return newRowIndex;
+}
+
+function dienMacDinhCA1LT_(sheet, rowIndex, thang, nam) {
+  const soNgay = soNgayTrongThangLT_(thang, nam);
+  const rowRange = sheet.getRange(rowIndex, LICHTRUC.COL_DAY1, 1, soNgay);
+  const values = rowRange.getValues()[0];
+  let daThayDoi = false;
+  for (let i = 0; i < soNgay; i++) {
+    if (!String(values[i] || '').trim()) {
+      values[i] = LICHTRUC.VAL_CA1;
+      daThayDoi = true;
+    }
+  }
+  if (daThayDoi) {
+    rowRange.setValues([values]);
+  }
+}
+
+function timNguoiDaOffNgayLT_(sheet, nv, thang, nam, day, mapNhanSu) {
+  const map = mapNhanSu || layMapNhanSuLT_();
+  const data = sheet.getDataRange().getValues();
+  const mailChuanHoa = normEmail_(nv.mail);
+  const blockChuanHoa = chuanHoaChuoiLT_(nv.block);
+
+  for (let r = 1; r < data.length; r++) {
+    const row = data[r];
+    const rowMail = normEmail_(row[LICHTRUC.COL_MAIL - 1]);
+    if (!rowMail || rowMail === mailChuanHoa) continue;
+
+    const rowThang = Number(row[LICHTRUC.COL_MONTH - 1]);
+    const rowNam = Number(row[LICHTRUC.COL_YEAR - 1]);
+    if (rowThang !== Number(thang) || rowNam !== Number(nam)) continue;
+
+    const thongTinNv = map[rowMail];
+    const rowBlock = thongTinNv ? chuanHoaChuoiLT_(thongTinNv.block) : chuanHoaChuoiLT_(row[LICHTRUC.COL_BLOCK - 1]);
+
+    if (rowBlock === blockChuanHoa) {
+      const giaTriNgay = String(row[LICHTRUC.COL_DAY1 - 1 + (Number(day) - 1)] || '').trim().toUpperCase();
+      if (giaTriNgay === LICHTRUC.VAL_OFF) {
+        return row[LICHTRUC.COL_HOTEN - 1] || row[LICHTRUC.COL_MAIL - 1];
+      }
+    }
+  }
+  return null;
+}
+
+function getThongTinNhanVien(email) {
+  const nv = timNhanVienTheoMailLT_(email);
+  if (!nv.found) {
+    return { found: false, message: 'Không tìm thấy nhân viên với email này trong danh sách Nhân Sự.' };
+  }
+  return {
+    found: true,
+    mail: nv.mail,
+    msnv: nv.msnv,
+    hoTen: nv.hoTen,
+    doiTac: nv.doiTac,
+    block: nv.block,
+    soLuongNhanSuTrongBlock: demSoNhanVienTrongBlockLT_(nv.block)
+  };
+}
+
+function getLichTrucBlock(email, thang, nam) {
+  const nv = timNhanVienTheoMailLT_(email);
+  if (!nv.found) return { found: false, message: 'Không tìm thấy nhân viên.' };
+
+  const map = layMapNhanSuLT_();
+  const sheet = getLichTrucSheet_();
+  const data = sheet.getDataRange().getValues();
+  const blockChuanHoa = chuanHoaChuoiLT_(nv.block);
+
+  const lichBlock = [];
+  for (let r = 1; r < data.length; r++) {
+    const row = data[r];
+    const rowMail = normEmail_(row[LICHTRUC.COL_MAIL - 1]);
+    if (!rowMail) continue;
+
+    const rowThang = Number(row[LICHTRUC.COL_MONTH - 1]);
+    const rowNam = Number(row[LICHTRUC.COL_YEAR - 1]);
+    if (rowThang !== Number(thang) || rowNam !== Number(nam)) continue;
+
+    const thongTinNv = map[rowMail];
+    const rowBlock = thongTinNv ? chuanHoaChuoiLT_(thongTinNv.block) : chuanHoaChuoiLT_(row[LICHTRUC.COL_BLOCK - 1]);
+    if (rowBlock !== blockChuanHoa) continue;
+
+    const days = {};
+    for (let d = 1; d <= LICHTRUC.MAX_DAYS; d++) {
+      const v = row[LICHTRUC.COL_DAY1 - 1 + (d - 1)];
+      days[d] = v ? String(v).trim().toUpperCase() : '';
+    }
+    lichBlock.push({
+      mail: row[LICHTRUC.COL_MAIL - 1],
+      hoTen: row[LICHTRUC.COL_HOTEN - 1],
+      msnv: row[LICHTRUC.COL_MSNV - 1],
+      isMe: rowMail === normEmail_(email),
+      days: days
+    });
+  }
+
+  return {
+    found: true,
+    block: nv.block,
+    soLuongNhanSuTrongBlock: demSoNhanVienTrongBlockLT_(nv.block),
+    lichBlock: lichBlock
+  };
+}
+
+function kiemTraNgay(email, thang, nam, day) {
+  const nv = timNhanVienTheoMailLT_(email);
+  if (!nv.found) return { success: false, message: 'Không tìm thấy nhân viên.' };
+
+  const soLuongBlock = demSoNhanVienTrongBlockLT_(nv.block);
+  if (soLuongBlock <= 1) {
+    return { success: true, coRangBuoc: false, allowO: true };
+  }
+
+  const sheet = getLichTrucSheet_();
+  const nguoiDaOff = timNguoiDaOffNgayLT_(sheet, nv, thang, nam, day);
+
+  return {
+    success: true,
+    coRangBuoc: true,
+    allowO: !nguoiDaOff,
+    nguoiDaOff: nguoiDaOff || null
+  };
+}
+
+function layDanhSachGoiY() {
+  const map = layMapNhanSuLT_();
+  const ds = [];
+  for (const key in map) {
+    const nv = map[key];
+    if (nv.status === 'ACTIVE') {
+      ds.push({ mail: nv.mail, hoTen: nv.hoTen, block: nv.block });
+    }
+  }
+  return ds;
+}
+
+function dangKyNgayOff(email, thang, nam, day, value) {
+  value = String(value || '').trim().toUpperCase();
+  day = Number(day);
+  thang = Number(thang);
+  nam = Number(nam);
+
+  if (value !== LICHTRUC.VAL_CA1 && value !== LICHTRUC.VAL_OFF) {
+    return { success: false, message: 'Giá trị không hợp lệ. Chỉ chấp nhận CA1 hoặc O.' };
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const map = layMapNhanSuLT_();
+    const nvRaw = map[normEmail_(email)];
+    const nv = nvRaw
+      ? { found: true, mail: nvRaw.mail, msnv: nvRaw.msnv, hoTen: nvRaw.hoTen,
+          doiTac: nvRaw.doiTac, block: nvRaw.block }
+      : { found: false };
+    if (!nv.found) return { success: false, message: 'Không tìm thấy nhân viên.' };
+
+    const soNgayThucCuaThang = soNgayTrongThangLT_(thang, nam);
+    if (!day || day < 1 || day > soNgayThucCuaThang) {
+      return { success: false, message: 'Ngày không hợp lệ. Tháng ' + thang + '/' + nam + ' chỉ có ' + soNgayThucCuaThang + ' ngày.' };
+    }
+
+    const sheet = getLichTrucSheet_();
+
+    let soLuongBlock = 0;
+    const blockChuanHoa = chuanHoaChuoiLT_(nv.block);
+    for (const key in map) {
+      if (chuanHoaChuoiLT_(map[key].block) === blockChuanHoa && map[key].status === 'ACTIVE') soLuongBlock++;
+    }
+
+    if (soLuongBlock > 1) {
+      const nguoiDaOff = timNguoiDaOffNgayLT_(sheet, nv, thang, nam, day, map);
+      if (nguoiDaOff && value === LICHTRUC.VAL_OFF) {
+        return {
+          success: false,
+          forceCA1: true,
+          message: 'Đã có nhân sự "' + nguoiDaOff + '" đăng ký OFF ngày ' + day +
+                    '. Ngày này chỉ có thể chọn CA1. Vui lòng liên hệ CBQL để sắp xếp thêm.'
+        };
+      }
+    }
+
+    const rowIndex = timHoacTaoDongLT_(sheet, nv, thang, nam);
+    dienMacDinhCA1LT_(sheet, rowIndex, thang, nam);
+    sheet.getRange(rowIndex, LICHTRUC.COL_DAY1 + (day - 1)).setValue(value);
+    SpreadsheetApp.flush();
+
+    return {
+      success: true,
+      message: 'Đã lưu thành công: Ngày ' + day + '/' + thang + '/' + nam + ' = ' + value
+    };
+  } finally {
+    lock.releaseLock();
+  }
 }
