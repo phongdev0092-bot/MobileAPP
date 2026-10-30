@@ -110,7 +110,15 @@ function isAllowedWebAppUrl(url: string): boolean {
   }
 }
 
-export const PortalWebView: React.FC = () => {
+interface PortalWebViewProps {
+  autoLoginEmail?: string;
+  autoLoginPassword?: string;
+}
+
+export const PortalWebView: React.FC<PortalWebViewProps> = ({
+  autoLoginEmail,
+  autoLoginPassword,
+}) => {
   const webViewRef = useRef<WebView>(null);
 
   // Trạng thái điều hướng và tải trang
