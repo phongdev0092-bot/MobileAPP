@@ -1,9 +1,9 @@
 /**
  * NetToolsView.tsx
  * Bộ 3 công cụ chẩn đoán mạng chuyên sâu cho FPT Telecom / NextSu AI:
- * Hỗ trợ 2 chế độ hiển thị:
- * 1. Chế độ Giao Diện CMD (Windows Command Prompt) chuẩn 100% như CMD thật
- * 2. Chế độ Giao Diện Thẻ (Modern Cards) tiện lợi với các tab Ping, Traceroute, Nslookup, Lịch sử
+ * - Hỗ trợ hiển thị Logo và Tên mạng Wi-Fi (SSID) nổi bật.
+ * - Giao diện chuẩn Windows Command Prompt (CMD) với phím tắt 1 chạm.
+ * - Xuất báo cáo chẩn đoán mạng dưới dạng Hình Ảnh Chụp CMD (PNG Image).
  */
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -17,7 +17,9 @@ import {
   ActivityIndicator,
   Modal,
   Platform,
+  Image,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { QUICK_HOSTS, validateHostInput } from '../utils/hostValidator';
 import { executePing, PingPacket, PingResult } from '../services/ping';
@@ -50,6 +52,12 @@ import {
   formatTracertHop,
   formatNslookupOutput,
 } from '../utils/cmdFormatter';
+import {
+  generateCmdCanvasImage,
+  downloadCmdImage,
+  shareCmdReport,
+  CmdSnapshotData,
+} from '../utils/cmdImageExport';
 import { Alert } from '../utils/alert';
 
 type ViewMode = 'CMD' | 'MODERN';
@@ -60,15 +68,19 @@ interface NetToolsViewProps {
 }
 
 export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
-  // Chế độ hiển thị: Mặc định là 'CMD' theo yêu cầu người dùng
   const [viewMode, setViewMode] = useState<ViewMode>('CMD');
 
-  // =========================================================================
-  // STATES CHO CHẾ ĐỘ CMD (COMMAND PROMPT)
-  // =========================================================================
+  // Thông tin mạng và Wi-Fi
+  const [networkInfo, setNetworkInfo] = useState<NetworkSnapshot | null>(null);
+  const [wifiSsid, setWifiSsid] = useState<string>('FPT_Telecom_Wi-Fi');
+  const [showEditWifiModal, setShowEditWifiModal] = useState<boolean>(false);
+  const [editWifiInput, setEditWifiInput] = useState<string>('');
+
+  // States cho CMD (Command Prompt)
   const [cmdInput, setCmdInput] = useState<string>('ping 8.8.8.8');
   const [cmdLogs, setCmdLogs] = useState<string[]>([
     ...CMD_BANNER,
+    '[📶 MẠNG ĐANG BẮT: Wi-Fi: FPT_Telecom_Wi-Fi | IP: 192.168.1.7 | Gateway: 192.168.1.1]',
     'Nhập lệnh (ping, tracert, nslookup, cls) hoặc bấm nút chọn nhanh bên dưới:',
     '',
   ]);
@@ -76,15 +88,15 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
   const cmdAbortRef = useRef<boolean>(false);
   const cmdScrollRef = useRef<ScrollView>(null);
 
-  // =========================================================================
-  // STATES CHO CHẾ ĐỘ THẺ (MODERN CARDS)
-  // =========================================================================
+  // States cho Xuất Ảnh Chụp Màn Hình CMD
+  const [cmdImageModalVisible, setCmdImageModalVisible] = useState<boolean>(false);
+  const [cmdImageUrl, setCmdImageUrl] = useState<string | null>(null);
+  const [copiedImageNotice, setCopiedImageNotice] = useState<string>('');
+
+  // States cho Giao Diện Thẻ (Modern)
   const [activeTab, setActiveTab] = useState<ToolTab>('PING');
   const [targetHost, setTargetHost] = useState<string>('google.com');
   const [inputError, setInputError] = useState<string>('');
-
-  // Thông tin mạng hiện tại
-  const [networkInfo, setNetworkInfo] = useState<NetworkSnapshot | null>(null);
 
   // States cho PING
   const [pingCount, setPingCount] = useState<number>(4);
@@ -115,11 +127,15 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
   const [copiedNotice, setCopiedNotice] = useState<string>('');
 
   useEffect(() => {
+    // Tải tên Wi-Fi đã lưu
+    AsyncStorage.getItem('@nextsu_custom_wifi_name').then((saved) => {
+      if (saved) setWifiSsid(saved);
+    });
     refreshNetworkInfo();
     loadHistory();
   }, []);
 
-  // Tự động cuộn xuống cuối màn hình CMD khi có log mới
+  // Cuộn xuống cuối console khi có log mới
   useEffect(() => {
     if (viewMode === 'CMD') {
       setTimeout(() => {
@@ -131,6 +147,9 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
   const refreshNetworkInfo = async () => {
     const info = await getCurrentNetworkSnapshot();
     setNetworkInfo(info);
+    if (info.ssid && info.ssid !== '<unknown ssid>' && info.ssid !== 'Wi-Fi') {
+      setWifiSsid(info.ssid);
+    }
   };
 
   const loadHistory = async () => {
@@ -138,8 +157,17 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
     setHistoryList(list);
   };
 
+  const handleSaveCustomWifi = async () => {
+    if (editWifiInput.trim()) {
+      const cleanName = editWifiInput.trim();
+      setWifiSsid(cleanName);
+      await AsyncStorage.setItem('@nextsu_custom_wifi_name', cleanName);
+    }
+    setShowEditWifiModal(false);
+  };
+
   // =========================================================================
-  // XỬ LÝ LỆNH CHẾ ĐỘ CMD (COMMAND PROMPT ENGINE)
+  // XỬ LÝ LỆNH TRONG CHẾ ĐỘ CMD
   // =========================================================================
   const handleExecuteCmd = async (customCommand?: string) => {
     const rawCmd = (customCommand !== undefined ? customCommand : cmdInput).trim();
@@ -153,14 +181,18 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
     const arg1 = parts[1] || '';
     const arg2 = parts[2] || '';
 
-    // 1. Lệnh CLS / CLEAR: Xóa sạch màn hình console
+    // 1. CLS: Xóa màn hình
     if (mainCmd === 'cls' || mainCmd === 'clear') {
-      setCmdLogs([...CMD_BANNER]);
+      setCmdLogs([
+        ...CMD_BANNER,
+        `[📶 MẠNG ĐANG BẮT: Wi-Fi: ${wifiSsid} | IP: ${networkInfo?.ipAddress || '192.168.1.7'} | Gateway: ${networkInfo?.gateway || '192.168.1.1'}]`,
+        '',
+      ]);
       setIsCmdRunning(false);
       return;
     }
 
-    // 2. Lệnh HELP: Hướng dẫn sử dụng
+    // 2. HELP: Hướng dẫn
     if (mainCmd === 'help' || mainCmd === '?') {
       setCmdLogs((prev) => [
         ...prev,
@@ -177,7 +209,6 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
       return;
     }
 
-    // 3. Phân loại lệnh thực thi: ping / tracert / nslookup
     let targetHostToRun = arg1;
     let actionType: 'ping' | 'tracert' | 'nslookup' = 'ping';
     let customCount = 4;
@@ -192,7 +223,6 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
     } else if (mainCmd === 'nslookup') {
       actionType = 'nslookup';
     } else {
-      // Nếu người dùng nhập trực tiếp tên miền / IP mà không gõ 'ping'
       actionType = 'ping';
       targetHostToRun = mainCmd;
     }
@@ -222,10 +252,14 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
 
     const host = check.host;
 
-    // --- A. THỰC THI LỆNH PING TRÊN CMD ---
+    // --- A. PING ---
     if (actionType === 'ping') {
       const headerLines = formatPingHeader(host);
-      setCmdLogs((prev) => [...prev, ...headerLines]);
+      setCmdLogs((prev) => [
+        ...prev,
+        `[📶 Mạng đo: Wi-Fi (${wifiSsid}) | IP: ${networkInfo?.ipAddress || '192.168.1.7'} | Gateway: ${networkInfo?.gateway || '192.168.1.1'}]`,
+        ...headerLines,
+      ]);
 
       try {
         let detectedTargetIp = host;
@@ -259,9 +293,14 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
       return;
     }
 
-    // --- B. THỰC THI LỆNH TRACERT TRÊN CMD ---
+    // --- B. TRACERT ---
     if (actionType === 'tracert') {
-      const headerLines = formatTracertHeader(host, host, networkInfo || undefined);
+      const headerLines = formatTracertHeader(host, host, {
+        type: 'Wi-Fi',
+        ssid: wifiSsid,
+        ipAddress: networkInfo?.ipAddress || '192.168.1.7',
+        gateway: networkInfo?.gateway || '192.168.1.1',
+      });
       setCmdLogs((prev) => [...prev, ...headerLines]);
 
       try {
@@ -292,7 +331,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
       return;
     }
 
-    // --- C. THỰC THI LỆNH NSLOOKUP TRÊN CMD ---
+    // --- C. NSLOOKUP ---
     if (actionType === 'nslookup') {
       const resolver: DnsResolver = arg2.includes('1.1.1.1') || arg2.includes('cloudflare') ? 'cloudflare' : 'google';
       try {
@@ -323,20 +362,44 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
     setIsCmdRunning(false);
   };
 
-  const handleCopyCmdLogs = async () => {
-    try {
-      const text = cmdLogs.join('\n');
-      if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard) {
-        await navigator.clipboard.writeText(text);
-      }
-      Alert.alert('Đã sao chép', 'Đã sao chép toàn bộ màn hình CMD vào bộ nhớ tạm.');
-    } catch {
-      Alert.alert('Thông báo', 'Vui lòng chọn văn bản để sao chép.');
+  // =========================================================================
+  // XUẤT ẢNH CHỤP MÀN HÌNH CMD (PNG IMAGE SNAPSHOT)
+  // =========================================================================
+  const handleExportCmdImage = () => {
+    const timestamp = new Date().toLocaleString('vi-VN');
+    const snapshotData: CmdSnapshotData = {
+      title: 'NextSu AI - FPT Telecom CMD Diagnostic Report',
+      wifiSsid,
+      ipAddress: networkInfo?.ipAddress || '192.168.1.7',
+      gateway: networkInfo?.gateway || '192.168.1.1',
+      logs: cmdLogs,
+      timestamp,
+    };
+
+    const dataUrl = generateCmdCanvasImage(snapshotData);
+    setCmdImageUrl(dataUrl);
+    setCmdImageModalVisible(true);
+    setCopiedImageNotice('');
+
+    // Nếu chạy trên Web, tự động kích hoạt tải file PNG về máy tính
+    if (dataUrl && Platform.OS === 'web') {
+      downloadCmdImage(dataUrl, `BaoCao-CMD-FPT-${Date.now()}.png`);
     }
   };
 
+  const handleShareReport = async () => {
+    const reportText = [
+      `FPT Telecom - Báo Cáo Chẩn Đoán Mạng CMD (${wifiSsid})`,
+      `IP: ${networkInfo?.ipAddress || '192.168.1.7'} | Gateway: ${networkInfo?.gateway || '192.168.1.1'}`,
+      '------------------------------------------------',
+      cmdLogs.slice(-25).join('\n'),
+    ].join('\n');
+
+    await shareCmdReport(reportText);
+  };
+
   // =========================================================================
-  // XỬ LÝ CHẾ ĐỘ THẺ (MODERN CARDS)
+  // CHẾ ĐỘ THẺ (MODERN)
   // =========================================================================
   const selectQuickHost = (host: string) => {
     setTargetHost(host);
@@ -526,7 +589,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
   };
 
   // =========================================================================
-  // GIAO DIỆN CHÍNH
+  // RENDER
   // =========================================================================
   return (
     <View style={styles.container}>
@@ -539,7 +602,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
         )}
         <View style={styles.headerTitleWrap}>
           <Text style={styles.headerTitle}>Bộ Công Cụ Mạng (NetTools)</Text>
-          <Text style={styles.headerSubtitle}>Ping • Traceroute • Nslookup • Xuất báo cáo</Text>
+          <Text style={styles.headerSubtitle}>Ping • Traceroute • Nslookup • Xuất ảnh CMD</Text>
         </View>
 
         {/* NÚT CHUYỂN ĐỔI CHẾ ĐỘ: CMD vs THẺ */}
@@ -568,7 +631,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
             onPress={() => setViewMode('MODERN')}
           >
             <Ionicons
-              name="grid-outline"
+              name="grid"
               size={14}
               color={viewMode === 'MODERN' ? '#FFFFFF' : '#475569'}
             />
@@ -585,30 +648,70 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
       </View>
 
       {/* ========================================================================= */}
-      {/* 1. CHẾ ĐỘ GIAO DIỆN CMD (WINDOWS COMMAND PROMPT) CHUẨN 100%               */}
+      {/* THANH BANNER HIỂN THỊ LOGO VÀ TÊN WI-FI RÕ RÀNG                           */}
+      {/* ========================================================================= */}
+      <View style={styles.wifiBannerCard}>
+        <View style={styles.wifiLogoCircle}>
+          <Ionicons name="wifi" size={22} color="#0072FF" />
+          <View style={styles.wifiGreenPulse} />
+        </View>
+        <View style={styles.wifiTextWrap}>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <Text style={styles.wifiTitleLabel}>WI-FI ĐANG BẮT: </Text>
+            <Text style={styles.wifiNameHighlight}>{wifiSsid}</Text>
+            <TouchableOpacity
+              onPress={() => {
+                setEditWifiInput(wifiSsid);
+                setShowEditWifiModal(true);
+              }}
+              style={styles.editWifiIconBtn}
+            >
+              <Ionicons name="pencil" size={13} color="#0072FF" />
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.wifiSubDetails}>
+            IP Thiết Bị: {networkInfo?.ipAddress || '192.168.1.7'}  •  Gateway Modem: {networkInfo?.gateway || '192.168.1.1'}
+          </Text>
+        </View>
+        <TouchableOpacity style={styles.refreshWifiButton} onPress={refreshNetworkInfo}>
+          <Ionicons name="refresh" size={16} color="#64748B" />
+        </TouchableOpacity>
+      </View>
+
+      {/* ========================================================================= */}
+      {/* 1. CHẾ ĐỘ GIAO DIỆN CMD (WINDOWS TERMINAL)                                */}
       {/* ========================================================================= */}
       {viewMode === 'CMD' ? (
         <View style={styles.cmdWindowContainer}>
-          {/* WINDOWS TERMINAL TITLE BAR */}
+          {/* TITLE BAR CHUẨN WINDOWS TERMINAL */}
           <View style={styles.cmdTitleBar}>
             <View style={styles.cmdTab}>
-              <Ionicons name="terminal-outline" size={13} color="#FFFFFF" style={{ marginRight: 6 }} />
+              <Ionicons name="terminal" size={13} color="#FFFFFF" style={{ marginRight: 6 }} />
               <Text style={styles.cmdTabText}>Command Prompt</Text>
               <Ionicons name="close" size={12} color="#94A3B8" style={{ marginLeft: 8 }} />
             </View>
 
             <View style={styles.cmdActionIcons}>
-              <TouchableOpacity style={styles.cmdHeaderAction} onPress={handleCopyCmdLogs}>
-                <Ionicons name="copy-outline" size={14} color="#94A3B8" />
-                <Text style={styles.cmdHeaderActionText}>Copy</Text>
+              {/* NÚT XUẤT ẢNH CHỤP CMD */}
+              <TouchableOpacity style={styles.cmdExportImageBtn} onPress={handleExportCmdImage}>
+                <Ionicons name="camera" size={13} color="#FFFFFF" />
+                <Text style={styles.cmdExportImageBtnText}>Xuất Ảnh CMD</Text>
               </TouchableOpacity>
+
               <TouchableOpacity
                 style={styles.cmdHeaderAction}
-                onPress={() => setCmdLogs([...CMD_BANNER])}
+                onPress={() => {
+                  setCmdLogs([
+                    ...CMD_BANNER,
+                    `[📶 MẠNG ĐANG BẮT: Wi-Fi: ${wifiSsid} | IP: ${networkInfo?.ipAddress || '192.168.1.7'} | Gateway: ${networkInfo?.gateway || '192.168.1.1'}]`,
+                    '',
+                  ]);
+                }}
               >
-                <Ionicons name="trash-outline" size={14} color="#94A3B8" />
+                <Ionicons name="trash" size={13} color="#94A3B8" />
                 <Text style={styles.cmdHeaderActionText}>CLS</Text>
               </TouchableOpacity>
+
               <View style={styles.cmdWindowControls}>
                 <Text style={styles.winControlBtn}>─</Text>
                 <Text style={styles.winControlBtn}>□</Text>
@@ -617,7 +720,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
             </View>
           </View>
 
-          {/* CHIP LỆNH NHANH CHO MÀN HÌNH ĐIỆN THOẠI */}
+          {/* CHIP LỆNH NHANH CHO ĐIỆN THOẠI */}
           <View style={styles.cmdQuickChipsBar}>
             <Text style={styles.cmdQuickLabel}>Gợi ý:</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.cmdQuickScroll}>
@@ -678,6 +781,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
           >
             {cmdLogs.map((line, index) => {
               const isCommand = line.startsWith(CMD_PROMPT_PREFIX);
+              const isWifiHeader = line.includes('📶 MẠNG');
               const isError =
                 line.includes('timed out') ||
                 line.includes('100% loss') ||
@@ -692,6 +796,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
                   style={[
                     styles.cmdText,
                     isCommand && styles.cmdTextCommand,
+                    isWifiHeader && styles.cmdTextWifiHeader,
                     isError && styles.cmdTextError,
                     isSuccess && styles.cmdTextSuccess,
                   ]}
@@ -705,12 +810,12 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
             {isCmdRunning && (
               <View style={styles.cmdRunningRow}>
                 <ActivityIndicator size="small" color="#38BDF8" style={{ marginRight: 8 }} />
-                <Text style={styles.cmdRunningText}>Đang thực thi lệnh... (Bấm Hủy bên dưới nếu cần)</Text>
+                <Text style={styles.cmdRunningText}>Đang thực thi lệnh... (Bấm Dừng bên dưới nếu cần)</Text>
               </View>
             )}
           </ScrollView>
 
-          {/* DÒNG NHẬP LỆNH DƯỚI CÙNG VỚI NÚT CHẠY VÀ NÚT HỦY */}
+          {/* DÒNG NHẬP LỆNH DƯỚI CÙNG */}
           <View style={styles.cmdInputBottomBar}>
             <Text style={styles.cmdPromptLabel}>{CMD_PROMPT_PREFIX}</Text>
             <TextInput
@@ -718,7 +823,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
               value={cmdInput}
               onChangeText={setCmdInput}
               onSubmitEditing={() => handleExecuteCmd()}
-              placeholder="gõ: ping 8.8.8.8, tracert google.com, cls..."
+              placeholder="ping 8.8.8.8, tracert google.com, cls..."
               placeholderTextColor="#64748B"
               autoCapitalize="none"
               autoCorrect={false}
@@ -742,17 +847,16 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
         </View>
       ) : (
         /* ========================================================================= */
-        /* 2. CHẾ ĐỘ GIAO DIỆN THẺ (MODERN CARDS)                                   */
+        /* 2. CHẾ ĐỘ THẺ (MODERN)                                                   */
         /* ========================================================================= */
         <View style={{ flex: 1 }}>
-          {/* TAB BAR CỦA CHẾ ĐỘ THẺ */}
           <View style={styles.tabBar}>
             <TouchableOpacity
               style={[styles.tabItem, activeTab === 'PING' && styles.tabItemActive]}
               onPress={() => setActiveTab('PING')}
             >
               <Ionicons
-                name="pulse-outline"
+                name="pulse"
                 size={16}
                 color={activeTab === 'PING' ? '#0072FF' : '#64748B'}
               />
@@ -764,7 +868,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
               onPress={() => setActiveTab('TRACEROUTE')}
             >
               <Ionicons
-                name="git-commit-outline"
+                name="git-network"
                 size={16}
                 color={activeTab === 'TRACEROUTE' ? '#0072FF' : '#64748B'}
               />
@@ -778,7 +882,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
               onPress={() => setActiveTab('NSLOOKUP')}
             >
               <Ionicons
-                name="globe-outline"
+                name="globe"
                 size={16}
                 color={activeTab === 'NSLOOKUP' ? '#0072FF' : '#64748B'}
               />
@@ -792,7 +896,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
               onPress={() => setActiveTab('HISTORY')}
             >
               <Ionicons
-                name="time-outline"
+                name="time"
                 size={16}
                 color={activeTab === 'HISTORY' ? '#0072FF' : '#64748B'}
               />
@@ -803,7 +907,6 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
           </View>
 
           <ScrollView style={styles.contentScroll} contentContainerStyle={styles.scrollContent}>
-            {/* INPUT HOST CHUNG (Trừ Tab Lịch sử) */}
             {activeTab !== 'HISTORY' && (
               <View style={styles.card}>
                 <Text style={styles.cardLabel}>MỤC TIÊU NHANH:</Text>
@@ -833,7 +936,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
 
                 <Text style={[styles.cardLabel, { marginTop: 12 }]}>HOẶC NHẬP HOST / ĐỊA CHỈ IP:</Text>
                 <View style={[styles.inputRow, inputError ? styles.inputRowError : null]}>
-                  <Ionicons name="link-outline" size={18} color="#64748B" style={{ marginRight: 8 }} />
+                  <Ionicons name="link" size={18} color="#64748B" style={{ marginRight: 8 }} />
                   <TextInput
                     style={styles.hostInput}
                     value={targetHost}
@@ -888,12 +991,12 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
                         style={[styles.actionBtn, styles.stopBtn]}
                         onPress={handleStopPing}
                       >
-                        <Ionicons name="stop-circle-outline" size={18} color="#FFFFFF" />
+                        <Ionicons name="stop-circle" size={18} color="#FFFFFF" />
                         <Text style={styles.actionBtnText}>Dừng Ping</Text>
                       </TouchableOpacity>
                     ) : (
                       <TouchableOpacity style={styles.actionBtn} onPress={handleStartPing}>
-                        <Ionicons name="play-outline" size={18} color="#FFFFFF" />
+                        <Ionicons name="play" size={18} color="#FFFFFF" />
                         <Text style={styles.actionBtnText}>Bắt Đầu Ping</Text>
                       </TouchableOpacity>
                     )}
@@ -965,7 +1068,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
                   </View>
                 )}
 
-                {/* TERMINAL MINI THEO ĐỊNH DẠNG CMD THẬT */}
+                {/* TERMINAL MINI DẠNG CMD */}
                 {(pingPackets.length > 0 || pingRunning) && (
                   <View style={styles.terminalBox}>
                     <View style={styles.terminalHeader}>
@@ -981,6 +1084,9 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
                     <View style={styles.terminalContent}>
                       <Text style={styles.cmdTextMini}>
                         {CMD_PROMPT_PREFIX}ping {targetHost}
+                      </Text>
+                      <Text style={styles.cmdTextMini}>
+                        [Wi-Fi: {wifiSsid} | Gateway: {networkInfo?.gateway || '192.168.1.1'}]
                       </Text>
                       <Text style={styles.cmdTextMini}>
                         Pinging {targetHost} with 32 bytes of data:
@@ -1017,8 +1123,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
               <View>
                 <View style={styles.card}>
                   <Text style={styles.helperText}>
-                    Traceroute thực hiện dò đường mạng qua TTL từ 1 đến 30. Mỗi hop thử 3 lần. Dừng khi
-                    đến đích hoặc sau 3 hop '*' liên tiếp sau hop 15.
+                    Traceroute dò tuyến đường mạng từ Modem Wi-Fi ({wifiSsid}) qua các hop ISP tới đích.
                   </Text>
 
                   <View style={{ marginTop: 12 }}>
@@ -1027,12 +1132,12 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
                         style={[styles.actionBtn, styles.stopBtn]}
                         onPress={handleStopTraceroute}
                       >
-                        <Ionicons name="close-circle-outline" size={18} color="#FFFFFF" />
+                        <Ionicons name="close-circle" size={18} color="#FFFFFF" />
                         <Text style={styles.actionBtnText}>Hủy Traceroute</Text>
                       </TouchableOpacity>
                     ) : (
                       <TouchableOpacity style={styles.actionBtn} onPress={handleStartTraceroute}>
-                        <Ionicons name="navigate-outline" size={18} color="#FFFFFF" />
+                        <Ionicons name="navigate" size={18} color="#FFFFFF" />
                         <Text style={styles.actionBtnText}>Bắt Đầu Traceroute</Text>
                       </TouchableOpacity>
                     )}
@@ -1214,7 +1319,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
                     <View style={styles.rowBetween}>
                       <Text style={styles.resultTitle}>KẾT QUẢ TRUY VẤN DNS</Text>
                       <View style={styles.latencyBadge}>
-                        <Ionicons name="time-outline" size={12} color="#059669" />
+                        <Ionicons name="time" size={12} color="#059669" />
                         <Text style={styles.latencyText}>{dnsResult.queryTimeMs} ms</Text>
                       </View>
                     </View>
@@ -1302,7 +1407,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
                       style={[styles.exportBtn, { backgroundColor: '#059669' }]}
                       onPress={() => handleExport('CSV')}
                     >
-                      <Ionicons name="document-text-outline" size={15} color="#FFF" />
+                      <Ionicons name="document-text" size={15} color="#FFF" />
                       <Text style={styles.exportBtnText}>Xuất CSV</Text>
                     </TouchableOpacity>
 
@@ -1310,7 +1415,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
                       style={[styles.exportBtn, { backgroundColor: '#7C3AED' }]}
                       onPress={() => handleExport('JSON')}
                     >
-                      <Ionicons name="code-slash-outline" size={15} color="#FFF" />
+                      <Ionicons name="code-slash" size={15} color="#FFF" />
                       <Text style={styles.exportBtnText}>Xuất JSON</Text>
                     </TouchableOpacity>
 
@@ -1318,15 +1423,26 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
                       style={[styles.exportBtn, { backgroundColor: '#0284C7' }]}
                       onPress={() => handleExport('TXT')}
                     >
-                      <Ionicons name="copy-outline" size={15} color="#FFF" />
+                      <Ionicons name="copy" size={15} color="#FFF" />
                       <Text style={styles.exportBtnText}>Bản TXT</Text>
                     </TouchableOpacity>
                   </View>
+
+                  {/* NÚT XUẤT ẢNH CHỤP CMD */}
+                  <TouchableOpacity
+                    style={[styles.exportBtn, { backgroundColor: '#0F172A', marginTop: 10 }]}
+                    onPress={handleExportCmdImage}
+                  >
+                    <Ionicons name="camera" size={16} color="#38BDF8" />
+                    <Text style={[styles.exportBtnText, { color: '#38BDF8' }]}>
+                      📸 Xuất Hình Ảnh Chụp CMD (PNG)
+                    </Text>
+                  </TouchableOpacity>
                 </View>
 
                 {historyList.length === 0 ? (
                   <View style={styles.emptyHistoryBox}>
-                    <Ionicons name="file-tray-outline" size={40} color="#94A3B8" />
+                    <Ionicons name="file-tray" size={40} color="#94A3B8" />
                     <Text style={styles.emptyHistoryText}>Chưa có lịch sử kiểm tra mạng.</Text>
                     <Text style={styles.emptyHistorySub}>
                       Hãy thực hiện một lần kiểm tra Ping, Traceroute hoặc Nslookup để lưu kết quả.
@@ -1378,9 +1494,9 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
                             </View>
 
                             <View style={styles.historyNetworkRow}>
-                              <Ionicons name="wifi-outline" size={12} color="#64748B" />
+                              <Ionicons name="wifi" size={12} color="#64748B" />
                               <Text style={styles.historyNetworkText}>
-                                Mạng: {item.network?.type || 'N/A'} (IP: {item.network?.ipAddress || 'N/A'})
+                                Mạng: {wifiSsid} (IP: {item.network?.ipAddress || '192.168.1.7'})
                               </Text>
                             </View>
 
@@ -1415,7 +1531,132 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
         </View>
       )}
 
-      {/* MODAL XUẤT BÁO CÁO */}
+      {/* ========================================================================= */}
+      {/* MODAL XEM VÀ TẢI ẢNH CHỤP MÀN HÌNH CMD (PNG SNAPSHOT)                     */}
+      {/* ========================================================================= */}
+      <Modal
+        visible={cmdImageModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setCmdImageModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Ionicons name="camera" size={18} color="#0072FF" style={{ marginRight: 6 }} />
+                <Text style={styles.modalTitle}>Ảnh Chụp Màn Hình Báo Cáo CMD</Text>
+              </View>
+              <TouchableOpacity onPress={() => setCmdImageModalVisible(false)}>
+                <Ionicons name="close" size={22} color="#64748B" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.modalSnapshotContainer}>
+              {cmdImageUrl ? (
+                <Image
+                  source={{ uri: cmdImageUrl }}
+                  style={{ width: '100%', height: 380, resizeMode: 'contain' }}
+                />
+              ) : (
+                /* Thẻ xem trước trực tiếp trên điện thoại */
+                <View style={styles.snapshotCardView}>
+                  <View style={styles.snapshotHeaderBar}>
+                    <Text style={styles.snapshotHeaderText}>{'>'}_ Command Prompt (Admin)</Text>
+                    <Text style={styles.snapshotWinIcons}>─  □  ✕</Text>
+                  </View>
+
+                  <View style={styles.snapshotWifiBanner}>
+                    <Ionicons name="wifi" size={14} color="#10B981" />
+                    <Text style={styles.snapshotWifiText}>
+                      Wi-Fi: {wifiSsid} | IP: {networkInfo?.ipAddress || '192.168.1.7'} | Gateway: {networkInfo?.gateway || '192.168.1.1'}
+                    </Text>
+                  </View>
+
+                  <View style={{ padding: 10 }}>
+                    {cmdLogs.slice(-20).map((l, idx) => (
+                      <Text key={idx} style={styles.snapshotLogLine}>{l || ' '}</Text>
+                    ))}
+                  </View>
+
+                  <View style={styles.snapshotFooterBar}>
+                    <Text style={styles.snapshotFooterText}>
+                      NextSu AI • FPT Telecom Diagnostic Snapshot
+                    </Text>
+                  </View>
+                </View>
+              )}
+            </ScrollView>
+
+            <View style={styles.modalFooter}>
+              {Platform.OS === 'web' && cmdImageUrl ? (
+                <TouchableOpacity
+                  style={[styles.modalCopyBtn, { backgroundColor: '#059669' }]}
+                  onPress={() => downloadCmdImage(cmdImageUrl, `BaoCao-CMD-${Date.now()}.png`)}
+                >
+                  <Ionicons name="download" size={16} color="#FFF" />
+                  <Text style={styles.modalCopyBtnText}>Tải Ảnh PNG</Text>
+                </TouchableOpacity>
+              ) : null}
+
+              <TouchableOpacity style={styles.modalCopyBtn} onPress={handleShareReport}>
+                <Ionicons name="share-social" size={16} color="#FFF" />
+                <Text style={styles.modalCopyBtnText}>Chia Sẻ Báo Cáo</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.modalCloseBtn}
+                onPress={() => setCmdImageModalVisible(false)}
+              >
+                <Text style={styles.modalCloseBtnText}>Đóng</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ========================================================================= */}
+      {/* MODAL ĐẶT / ĐỔI TÊN MẠNG WI-FI THỦ CÔNG                                  */}
+      {/* ========================================================================= */}
+      <Modal
+        visible={showEditWifiModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowEditWifiModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalBox, { maxHeight: 250 }]}>
+            <Text style={styles.modalTitle}>Tên Mạng Wi-Fi Đang Kết Nối</Text>
+            <Text style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>
+              Nhập tên Wi-Fi (SSID) bạn đang bắt để hiển thị trên tiêu đề và báo cáo CMD:
+            </Text>
+
+            <TextInput
+              style={[styles.hostInput, { backgroundColor: '#F1F5F9', borderRadius: 8, padding: 10, marginTop: 12 }]}
+              value={editWifiInput}
+              onChangeText={setEditWifiInput}
+              placeholder="Ví dụ: FPT_Telecom_5G, Nha_Phong..."
+            />
+
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+              <TouchableOpacity
+                style={[styles.modalCopyBtn, { backgroundColor: '#0072FF' }]}
+                onPress={handleSaveCustomWifi}
+              >
+                <Text style={styles.modalCopyBtnText}>Lưu Tên Wi-Fi</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.modalCloseBtn}
+                onPress={() => setShowEditWifiModal(false)}
+              >
+                <Text style={styles.modalCloseBtnText}>Hủy</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* MODAL XUẤT CSV / JSON / TXT */}
       <Modal
         visible={exportModalVisible}
         transparent={true}
@@ -1448,7 +1689,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
 
             <View style={styles.modalFooter}>
               <TouchableOpacity style={styles.modalCopyBtn} onPress={handleCopyExport}>
-                <Ionicons name="copy-outline" size={16} color="#FFF" />
+                <Ionicons name="copy" size={16} color="#FFF" />
                 <Text style={styles.modalCopyBtnText}>Sao Chép Toàn Bộ</Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -1528,6 +1769,71 @@ const styles = StyleSheet.create({
   },
 
   // =========================================================================
+  // BANNER WI-FI NỔI BẬT
+  // =========================================================================
+  wifiBannerCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#BFDBFE',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  wifiLogoCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#DBEAFE',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+    position: 'relative',
+    borderWidth: 1,
+    borderColor: '#93C5FD',
+  },
+  wifiGreenPulse: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#10B981',
+    borderWidth: 1,
+    borderColor: '#FFFFFF',
+  },
+  wifiTextWrap: {
+    flex: 1,
+  },
+  wifiTitleLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#1E40AF',
+  },
+  wifiNameHighlight: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#0072FF',
+  },
+  editWifiIconBtn: {
+    marginLeft: 6,
+    padding: 3,
+  },
+  wifiSubDetails: {
+    fontSize: 10,
+    color: '#475569',
+    marginTop: 2,
+  },
+  refreshWifiButton: {
+    padding: 6,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+  },
+
+  // =========================================================================
   // STYLES CHẾ ĐỘ CMD WINDOWS
   // =========================================================================
   cmdWindowContainer: {
@@ -1548,7 +1854,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#2D2D2D',
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 4,
   },
@@ -1561,13 +1867,27 @@ const styles = StyleSheet.create({
   cmdActionIcons: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
+  },
+  cmdExportImageBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0072FF',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    gap: 4,
+  },
+  cmdExportImageBtnText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '700',
   },
   cmdHeaderAction: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 6,
-    paddingVertical: 3,
+    paddingVertical: 4,
     borderRadius: 4,
     backgroundColor: '#2D2D2D',
     gap: 4,
@@ -1580,8 +1900,8 @@ const styles = StyleSheet.create({
   cmdWindowControls: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    marginLeft: 6,
+    gap: 8,
+    marginLeft: 4,
   },
   winControlBtn: {
     color: '#94A3B8',
@@ -1644,11 +1964,15 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '700',
   },
+  cmdTextWifiHeader: {
+    color: '#38BDF8',
+    fontWeight: '700',
+  },
   cmdTextError: {
     color: '#F87171',
   },
   cmdTextSuccess: {
-    color: '#E2E8F0',
+    color: '#4ADE80',
   },
   cmdRunningRow: {
     flexDirection: 'row',
@@ -2271,7 +2595,7 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 16,
@@ -2302,6 +2626,70 @@ const styles = StyleSheet.create({
     color: '#0F172A',
     flex: 1,
     marginRight: 10,
+  },
+  modalSnapshotContainer: {
+    backgroundColor: '#0C0C0C',
+    borderRadius: 10,
+    marginTop: 10,
+    maxHeight: 400,
+    borderWidth: 1,
+    borderColor: '#333333',
+    overflow: 'hidden',
+  },
+  snapshotCardView: {
+    backgroundColor: '#0C0C0C',
+  },
+  snapshotHeaderBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: '#1F1F1F',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  snapshotHeaderText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '600',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  snapshotWinIcons: {
+    color: '#94A3B8',
+    fontSize: 12,
+  },
+  snapshotWifiBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#18181B',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#27272A',
+  },
+  snapshotWifiText: {
+    color: '#38BDF8',
+    fontSize: 10,
+    marginLeft: 6,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontWeight: '600',
+  },
+  snapshotLogLine: {
+    color: '#CCCCCC',
+    fontSize: 10,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    lineHeight: 14,
+  },
+  snapshotFooterBar: {
+    backgroundColor: '#141414',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#262626',
+  },
+  snapshotFooterText: {
+    color: '#64748B',
+    fontSize: 9,
+    fontStyle: 'italic',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   modalContentScroll: {
     backgroundColor: '#F8FAFC',
@@ -2335,7 +2723,7 @@ const styles = StyleSheet.create({
   },
   modalFooter: {
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
     marginTop: 12,
   },
   modalCopyBtn: {
@@ -2349,7 +2737,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   modalCopyBtnText: {
-    fontSize: 13,
+    fontSize: 12,
     color: '#FFFFFF',
     fontWeight: '700',
   },
@@ -2362,7 +2750,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   modalCloseBtnText: {
-    fontSize: 13,
+    fontSize: 12,
     color: '#475569',
     fontWeight: '600',
   },
