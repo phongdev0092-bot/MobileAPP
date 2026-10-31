@@ -67,6 +67,30 @@ export interface AuthResult {
 
 const STORAGE_SESSION_KEY = '@nextsu_ai_session_v2';
 const STORAGE_LOCAL_PASS_PREFIX = '@nextsu_ai_user_pass_';
+export const STORAGE_LAST_ACTIVE_KEY = '@nextsu_ai_last_active_at';
+
+/**
+ * Ghi lại mốc thời gian thao tác gần nhất của người dùng
+ */
+export async function recordLastActiveTime(): Promise<void> {
+  try {
+    await AsyncStorage.setItem(STORAGE_LAST_ACTIVE_KEY, String(Date.now()));
+  } catch {}
+}
+
+/**
+ * Lấy mốc thời gian thao tác gần nhất của người dùng
+ */
+export async function getLastActiveTime(): Promise<number> {
+  try {
+    const raw = await AsyncStorage.getItem(STORAGE_LAST_ACTIVE_KEY);
+    if (!raw) return 0;
+    const num = parseInt(raw, 10);
+    return isNaN(num) ? 0 : num;
+  } catch {
+    return 0;
+  }
+}
 
 /**
  * Phân tách dòng CSV chuẩn (hỗ trợ cả ô có dấu phẩy nằm trong ngoặc kép)
@@ -590,11 +614,23 @@ export async function getSavedSession(): Promise<{
   token: string;
   profile: EmployeeProfile;
   password?: string;
+  lastActiveAt?: number;
 } | null> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_SESSION_KEY);
     if (!raw) return null;
-    return JSON.parse(raw);
+    const session = JSON.parse(raw);
+
+    // Kiểm tra thời gian không thao tác trong app (mặc định 2 tiếng = 7.200.000 ms)
+    const lastActive = await getLastActiveTime();
+    const effectiveLast = lastActive || session.lastActiveAt || 0;
+    if (effectiveLast > 0 && Date.now() - effectiveLast >= CONFIG.INACTIVITY_TIMEOUT_MS) {
+      // Đã quá 2 tiếng không thao tác -> Hết hạn phiên
+      await clearSavedSession();
+      return null;
+    }
+
+    return session;
   } catch {
     return null;
   }
@@ -603,7 +639,68 @@ export async function getSavedSession(): Promise<{
 export async function clearSavedSession(): Promise<void> {
   try {
     await AsyncStorage.removeItem(STORAGE_SESSION_KEY);
+    await AsyncStorage.removeItem(STORAGE_LAST_ACTIVE_KEY);
   } catch {}
+}
+
+/* ===================== HỒ SƠ NHÂN SỰ ĐẦY ĐỦ (TAB USER) ===================== */
+
+export interface FullEmployeeProfile {
+  code: string;      // F - Mã NV (col 6, index 5)
+  name: string;      // E - Họ Tên NV (col 5, index 4)
+  status: string;    // M - Tình trạng tài khoản (col 13, index 12)
+  email: string;     // K - Email (col 11, index 10)
+  area: string;      // U - Vị trí phụ trách (col 21, index 20)
+  partner: string;   // C - Đối tác (col 3, index 2)
+  block: string;     // D - Block (col 4, index 3)
+  inside: string;    // G - Inside Account (col 7, index 6)
+  mobisale: string;  // AE - Mobisale (col 31, index 30)
+  cccd: string;      // I - CCCD 12 số (col 9, index 8)
+  address: string;   // J - Địa chỉ thường trú (col 10, index 9)
+  phone: string;     // L - SĐT cá nhân (col 12, index 11)
+  startDate: string; // AA - Ngày vô công ty (col 27, index 26)
+  avatar: string;    // V - Hình ảnh (col 22, index 21)
+}
+
+/**
+ * Đọc trực tiếp hồ sơ nhân sự đầy đủ từ Google Sheet (dùng làm nguồn dữ liệu chính hoặc fallback an toàn)
+ */
+export async function fetchFullEmployeeProfile(
+  rawEmail: string
+): Promise<FullEmployeeProfile | null> {
+  const normEmail = String(rawEmail || '').trim().toLowerCase();
+  if (!normEmail) return null;
+  try {
+    const rows = await fetchEmployeeSheetRows();
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const rowEmail = String(row[CONFIG.COL_INDEX_EMAIL] || '')
+        .trim()
+        .toLowerCase();
+      if (rowEmail === normEmail) {
+        return {
+          code: String(row[5] || '').trim(),       // F
+          name: String(row[4] || '').trim(),       // E
+          status: String(row[12] || '').trim(),    // M
+          email: String(row[10] || '').trim(),     // K
+          area: String(row[20] || '').trim(),      // U
+          partner: String(row[2] || '').trim(),    // C
+          block: String(row[3] || '').trim(),      // D
+          inside: String(row[6] || '').trim(),     // G
+          mobisale: String(row[30] || '').trim(),  // AE
+          cccd: String(row[8] || '').trim(),       // I
+          address: String(row[9] || '').trim(),    // J
+          phone: String(row[11] || '').trim(),     // L
+          startDate: String(row[26] || '').trim(), // AA
+          avatar: String(row[21] || '').trim(),    // V
+        };
+      }
+    }
+    return null;
+  } catch (e) {
+    console.warn('fetchFullEmployeeProfile error:', e);
+    return null;
+  }
 }
 
 /* ===================== HỆ THỐNG ĐĂNG KÝ LỊCH TRỰC / OFF THEO BLOCK ===================== */

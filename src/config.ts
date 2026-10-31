@@ -6,6 +6,9 @@ export const CONFIG = {
   APP_NAME: 'NextSu AI',
   APP_SUBTITLE: 'Cổng nhân viên & Trợ lý vận hành thông minh',
 
+  // Thời gian tự động ngắt phiên nếu không có thao tác trong app (2 tiếng = 120 phút = 7.200.000 ms)
+  INACTIVITY_TIMEOUT_MS: 2 * 60 * 60 * 1000,
+
   // Sheet nhân sự: Cột E (5) = Họ Tên NV, Cột H (8) = Password, Cột K (11) = Email, Cột V (22) = Hình ảnh, Cột AD (30) = Roles
   EMPLOYEE_SHEET_ID: '17QLc9SlfpPPrR-d1R2BkBxA7DmCI5ZCuhmQffP5F6pY',
   EMPLOYEE_SHEET_GID: 32204814,

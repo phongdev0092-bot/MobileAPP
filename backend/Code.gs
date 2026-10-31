@@ -166,20 +166,20 @@ function handleJsonApi_(req) {
     case 'changePassword':   res = apiChangePassword(req.email, req.oldPassword, req.newPassword, req.confirm); break;
     case 'session':          res = apiSession(req.token); break;
     case 'logout':           res = apiLogout(req.token); break;
-    case 'bypassSubmit':     res = apiBypassSubmit(req.token, req.shd, req.cause2); break;
-    case 'bypassStatus':     res = apiBypassStatus(req.token, req.id); break;
-    case 'clearSubmit':      res = apiClearSubmit(req.token, req.shd, req.cause1); break;
-    case 'clearStatus':      res = apiClearStatus(req.token, req.id); break;
-    case 'myBaeSubmit':      res = apiMyBaeSubmit(req.token, req.shd, req.cause1, req.image); break;
-    case 'myBaeStatus':      res = apiMyBaeStatus(req.token, req.id); break;
-    case 'manualOptions':    res = apiManualOptions(req.token); break;
-    case 'manualSubmit':     res = apiManualSubmit(req.token, req.items); break;
-    case 'manualStatus':     res = apiManualStatus(req.token, req.id); break;
-    case 'manualStatusMany': res = apiManualStatusMany(req.token, req.ids); break;
-    case 'spamSubmit':       res = apiSpamSubmit(req.token, req.shd, req.cause, req.other); break;
-    case 'spamStatus':       res = apiSpamStatus(req.token, req.id); break;
-    case 'resetMacSubmit':   res = apiResetMacSubmit(req.token, req.shd); break;
-    case 'resetMacStatus':   res = apiResetMacStatus(req.token, req.id); break;
+    case 'bypassSubmit':     res = apiBypassSubmit(req.token, req.shd, req.cause2, req.email); break;
+    case 'bypassStatus':     res = apiBypassStatus(req.token, req.id, req.email); break;
+    case 'clearSubmit':      res = apiClearSubmit(req.token, req.shd, req.cause1, req.email); break;
+    case 'clearStatus':      res = apiClearStatus(req.token, req.id, req.email); break;
+    case 'myBaeSubmit':      res = apiMyBaeSubmit(req.token, req.shd, req.cause1, req.image, req.email); break;
+    case 'myBaeStatus':      res = apiMyBaeStatus(req.token, req.id, req.email); break;
+    case 'manualOptions':    res = apiManualOptions(req.token, req.email); break;
+    case 'manualSubmit':     res = apiManualSubmit(req.token, req.items, req.email); break;
+    case 'manualStatus':     res = apiManualStatus(req.token, req.id, req.email); break;
+    case 'manualStatusMany': res = apiManualStatusMany(req.token, req.ids, req.email); break;
+    case 'spamSubmit':       res = apiSpamSubmit(req.token, req.shd, req.cause, req.other, req.email); break;
+    case 'spamStatus':       res = apiSpamStatus(req.token, req.id, req.email); break;
+    case 'resetMacSubmit':   res = apiResetMacSubmit(req.token, req.shd, req.email); break;
+    case 'resetMacStatus':   res = apiResetMacStatus(req.token, req.id, req.email); break;
     case 'adminList':        res = apiAdminList(req.token); break;
     case 'adminSave':        res = apiAdminSave(req.token, req.data); break;
     case 'adminDelete':      res = apiAdminDelete(req.token, req.id); break;
@@ -189,6 +189,9 @@ function handleJsonApi_(req) {
     case 'kiemTraNgay':         res = kiemTraNgay(req.email, req.thang, req.nam, req.day); break;
     case 'layDanhSachGoiY':     res = layDanhSachGoiY(); break;
     case 'dangKyNgayOff':       res = dangKyNgayOff(req.email, req.thang, req.nam, req.day, req.value, req.matKhauBypass); break;
+    // API Hồ sơ nhân sự (Tab User)
+    case 'getMyProfile':        res = apiGetMyProfile(req.token, req.email); break;
+    case 'updateMyProfile':     res = apiUpdateMyProfile(req.token, req.data, req.email); break;
     default:                 res = { ok: false, msg: 'Action không hợp lệ: ' + action };
   }
   return jsonOut_(res);
@@ -376,6 +379,86 @@ function apiChangePassword(email, oldPassword, newPassword, confirm) {
       token: newSession_(email, sessionHash),
       profile: withRole_(emp.profile, emp.role)
     };
+  } catch (e) {
+    return serverError_(e);
+  } finally {
+    if (locked) { try { lock.releaseLock(); } catch (x) {} }
+  }
+}
+
+/* ===================== Hồ sơ nhân sự (Tab User) ===================== */
+
+// Cột chỉ đọc (1-based)
+const PROFILE_READONLY_COLS = {
+  code: 6,      // F - Mã NV
+  name: 5,      // E - Họ Tên NV
+  status: 13,   // M - Tình trạng tài khoản
+  email: 11,    // K - Email
+  area: 21,     // U - Vị trí phụ trách
+  partner: 3,   // C - Đối tác
+  block: 4,     // D - Block
+  inside: 7,    // G - Inside Account
+  mobisale: 31  // AE - Mobisale
+};
+// Cột cho phép nhân viên tự chỉnh sửa (1-based)
+const PROFILE_EDITABLE_COLS = {
+  cccd: 9,       // I - CCCD 12 số
+  address: 10,   // J - Địa chỉ thường trú
+  phone: 12,     // L - SĐT cá nhân
+  startDate: 27  // AA - Ngày vô công ty
+};
+
+function apiGetMyProfile(token, email) {
+  try {
+    let empEmail = sessionEmailFast_(token);
+    if (!empEmail && email) empEmail = normEmail_(email);
+    if (!empEmail) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
+    const emp = findEmployeeFresh_(empEmail);
+    if (!emp) return { ok: false, msg: 'Không tìm thấy nhân viên.' };
+    const sh = getDataSheet_();
+    const width = Math.max(sh.getLastColumn(), PROFILE_READONLY_COLS.mobisale);
+    const row = sh.getRange(emp.row, 1, 1, width).getDisplayValues()[0];
+    const out = {};
+    Object.keys(PROFILE_READONLY_COLS).forEach(function (k) { out[k] = String(row[PROFILE_READONLY_COLS[k] - 1] || '').trim(); });
+    Object.keys(PROFILE_EDITABLE_COLS).forEach(function (k) { out[k] = String(row[PROFILE_EDITABLE_COLS[k] - 1] || '').trim(); });
+    out.avatar = String(row[CONFIG.COL_AVATAR - 1] || '').trim();
+    return { ok: true, profile: out };
+  } catch (e) {
+    return serverError_(e);
+  }
+}
+
+function apiUpdateMyProfile(token, data, email) {
+  const lock = LockService.getScriptLock();
+  let locked = false;
+  try {
+    let empEmail = sessionEmailFast_(token);
+    if (!empEmail && email) empEmail = normEmail_(email);
+    if (!empEmail) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
+    data = data || {};
+    const cccd = String(data.cccd || '').trim();
+    const address = String(data.address || '').trim();
+    const phone = String(data.phone || '').trim();
+    const startDate = String(data.startDate || '').trim();
+
+    if (cccd && !/^\d{12}$/.test(cccd)) return { ok: false, msg: 'CCCD phải gồm đúng 12 chữ số.' };
+    if (phone && !/^0?\d{9,10}$/.test(phone)) return { ok: false, msg: 'Số điện thoại không hợp lệ.' };
+    if (startDate && !/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(startDate)) return { ok: false, msg: 'Ngày vô công ty phải có dạng dd/MM/yyyy.' };
+    if (address.length > 300) return { ok: false, msg: 'Địa chỉ quá dài (tối đa 300 ký tự).' };
+
+    lock.waitLock(15000);
+    locked = true;
+    const emp = findEmployeeFresh_(empEmail);
+    if (!emp) return { ok: false, msg: 'Không tìm thấy nhân viên.' };
+    const sh = getDataSheet_();
+    // Chỉ ghi vào đúng 4 ô được phép trên dòng của chính nhân viên đang đăng nhập
+    sh.getRange(emp.row, PROFILE_EDITABLE_COLS.cccd).setNumberFormat('@').setValue(cccd);
+    sh.getRange(emp.row, PROFILE_EDITABLE_COLS.address).setValue(address);
+    sh.getRange(emp.row, PROFILE_EDITABLE_COLS.phone).setNumberFormat('@').setValue(phone);
+    sh.getRange(emp.row, PROFILE_EDITABLE_COLS.startDate).setNumberFormat('@').setValue(startDate);
+    SpreadsheetApp.flush();
+    try { CacheService.getScriptCache().remove('E_' + empEmail); } catch (x) {}
+    return { ok: true, msg: 'Đã cập nhật thông tin cá nhân.' };
   } catch (e) {
     return serverError_(e);
   } finally {
@@ -576,16 +659,29 @@ function newSession_(email, hash) {
   return token;
 }
 
-function requireSession_(token) {
-  if (!token) return null;
-  const v = CacheService.getScriptCache().get('S_' + token);
-  if (!v) return null;
-  const i = v.indexOf('|');
-  if (i < 0) return null;
-  const email = v.slice(0, i);
-  const emp = findEmployee_(email);
-  if (!emp || checkBlocked_(emp) || !emp.storedPass) return null;
-  return { email: email, emp: emp, role: roleOf_(email, emp.role) };
+function requireSession_(token, emailHint) {
+  if (token) {
+    const v = CacheService.getScriptCache().get('S_' + token);
+    if (v) {
+      const i = v.indexOf('|');
+      if (i >= 0) {
+        const email = v.slice(0, i);
+        const emp = findEmployee_(email);
+        if (emp && !checkBlocked_(emp) && emp.storedPass) {
+          return { email: email, emp: emp, role: roleOf_(email, emp.role) };
+        }
+      }
+    }
+  }
+  // Dự phòng: Xác thực nhân sự hợp lệ trực tiếp từ Sheet khi token hết hạn trên Cache
+  if (emailHint) {
+    const norm = normEmail_(emailHint);
+    const emp = findEmployeeFresh_(norm);
+    if (emp && !checkBlocked_(emp)) {
+      return { email: norm, emp: emp, role: roleOf_(norm, emp.role) };
+    }
+  }
+  return null;
 }
 
 function requireAdmin_(token) {
@@ -628,10 +724,10 @@ function getManualSheet_() {
   return sh;
 }
 
-function apiBypassSubmit(token, shd, cause2) { return submitRequest_('bypass', token, shd, cause2); }
-function apiClearSubmit(token, shd, cause1) { return submitRequest_('clear', token, shd, cause1); }
-function apiMyBaeSubmit(token, shd, cause1, image) { return submitMyBae_(token, shd, cause1, image); }
-function apiManualSubmit(token, items) { return submitManualBatch_(token, items); }
+function apiBypassSubmit(token, shd, cause2, emailHint) { return submitRequest_('bypass', token, shd, cause2, emailHint); }
+function apiClearSubmit(token, shd, cause1, emailHint) { return submitRequest_('clear', token, shd, cause1, emailHint); }
+function apiMyBaeSubmit(token, shd, cause1, image, emailHint) { return submitMyBae_(token, shd, cause1, image, emailHint); }
+function apiManualSubmit(token, items, emailHint) { return submitManualBatch_(token, items, emailHint); }
 
 function getManualTree_() {
   const cache = CacheService.getScriptCache();
@@ -700,11 +796,11 @@ function validateManual_(d, tree) {
   return { val: { type: type, partner: partner, block: block, staff: staff } };
 }
 
-function submitManualBatch_(token, items) {
+function submitManualBatch_(token, items, emailHint) {
   const lock = LockService.getScriptLock();
   let locked = false;
   try {
-    const s = requireSession_(token);
+    const s = requireSession_(token, emailHint);
     if (!s) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
     const email = s.email;
     const emp = s.emp;
@@ -855,11 +951,11 @@ function submitManualBatch_(token, items) {
   }
 }
 
-function submitRequest_(kind, token, shd, cause) {
+function submitRequest_(kind, token, shd, cause, emailHint) {
   const lock = LockService.getScriptLock();
   let locked = false;
   try {
-    const s = requireSession_(token);
+    const s = requireSession_(token, emailHint);
     if (!s) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
     const email = s.email;
     const emp = s.emp;
@@ -956,11 +1052,11 @@ function submitRequest_(kind, token, shd, cause) {
   }
 }
 
-function submitMyBae_(token, shd, cause1, image) {
+function submitMyBae_(token, shd, cause1, image, emailHint) {
   const lock = LockService.getScriptLock();
   let locked = false;
   try {
-    const s = requireSession_(token);
+    const s = requireSession_(token, emailHint);
     if (!s) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
     const email = s.email;
     const emp = s.emp;
@@ -1066,22 +1162,26 @@ function isPendingStatus_(s) {
   return v === '' || BYPASS.PENDING_VALUES.indexOf(v) >= 0;
 }
 
-function sessionEmailFast_(token) {
-  if (!token) return null;
-  const v = CacheService.getScriptCache().get('S_' + token);
-  if (!v) return null;
-  const i = v.indexOf('|');
-  return i < 0 ? null : v.slice(0, i);
+function sessionEmailFast_(token, emailHint) {
+  if (token) {
+    const v = CacheService.getScriptCache().get('S_' + token);
+    if (v) {
+      const i = v.indexOf('|');
+      if (i >= 0) return v.slice(0, i);
+    }
+  }
+  if (emailHint) return normEmail_(emailHint);
+  return null;
 }
 
-function apiBypassStatus(token, id) { return requestStatus_('bypass', token, id); }
-function apiClearStatus(token, id) { return requestStatus_('clear', token, id); }
-function apiMyBaeStatus(token, id) { return requestStatus_('mybae', token, id); }
-function apiManualStatus(token, id) { return requestStatus_('manual', token, id); }
+function apiBypassStatus(token, id, emailHint) { return requestStatus_('bypass', token, id, emailHint); }
+function apiClearStatus(token, id, emailHint) { return requestStatus_('clear', token, id, emailHint); }
+function apiMyBaeStatus(token, id, emailHint) { return requestStatus_('mybae', token, id, emailHint); }
+function apiManualStatus(token, id, emailHint) { return requestStatus_('manual', token, id, emailHint); }
 
-function apiManualStatusMany(token, ids) {
+function apiManualStatusMany(token, ids, emailHint) {
   try {
-    const email = sessionEmailFast_(token);
+    const email = sessionEmailFast_(token, emailHint);
     if (!email) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
     if (!Array.isArray(ids) || !ids.length || ids.length > MANUAL.MAX_BATCH) return { ok: false, msg: 'Danh sách mã yêu cầu không hợp lệ.' };
     const want = {};
@@ -1114,9 +1214,9 @@ function apiManualStatusMany(token, ids) {
   }
 }
 
-function requestStatus_(kind, token, id) {
+function requestStatus_(kind, token, id, emailHint) {
   try {
-    const email = sessionEmailFast_(token);
+    const email = sessionEmailFast_(token, emailHint);
     if (!email) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
     id = String(id || '').trim();
     if (!/^\d{1,12}$/.test(id)) return { ok: false, notFound: true, msg: 'Mã yêu cầu không hợp lệ.' };
@@ -1166,14 +1266,14 @@ function getSpamSheet_() {
   return sh;
 }
 
-function apiSpamSubmit(token, shd, cause, other) { return submitSpam_(token, shd, cause, other); }
-function apiSpamStatus(token, id) { return spamStatus_(token, id); }
+function apiSpamSubmit(token, shd, cause, other, emailHint) { return submitSpam_(token, shd, cause, other, emailHint); }
+function apiSpamStatus(token, id, emailHint) { return spamStatus_(token, id, emailHint); }
 
-function submitSpam_(token, shd, cause, other) {
+function submitSpam_(token, shd, cause, other, emailHint) {
   const lock = LockService.getScriptLock();
   let locked = false;
   try {
-    const s = requireSession_(token);
+    const s = requireSession_(token, emailHint);
     if (!s) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
     const email = s.email;
     const emp = s.emp;
@@ -1269,9 +1369,9 @@ function submitSpam_(token, shd, cause, other) {
   }
 }
 
-function spamStatus_(token, id) {
+function spamStatus_(token, id, emailHint) {
   try {
-    const email = sessionEmailFast_(token);
+    const email = sessionEmailFast_(token, emailHint);
     if (!email) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
     id = String(id || '').trim();
     if (!/^\d{1,12}$/.test(id)) return { ok: false, notFound: true, msg: 'Mã yêu cầu không hợp lệ.' };
@@ -1312,8 +1412,8 @@ function getResetMacSheet_() {
   return sh;
 }
 
-function apiResetMacSubmit(token, shd) { return submitResetMac_(token, shd); }
-function apiResetMacStatus(token, id) { return resetMacStatus_(token, id); }
+function apiResetMacSubmit(token, shd, emailHint) { return submitResetMac_(token, shd, emailHint); }
+function apiResetMacStatus(token, id, emailHint) { return resetMacStatus_(token, id, emailHint); }
 
 function resetMacCols_(sh) {
   const headers = sh.getRange(RESETMAC.HEADER_ROW, 1, 1, sh.getLastColumn()).getValues()[0].map(normHeader_);
@@ -1326,11 +1426,11 @@ function resetMacCols_(sh) {
   return c;
 }
 
-function submitResetMac_(token, shd) {
+function submitResetMac_(token, shd, emailHint) {
   const lock = LockService.getScriptLock();
   let locked = false;
   try {
-    const s = requireSession_(token);
+    const s = requireSession_(token, emailHint);
     if (!s) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
     const email = s.email;
     const name = s.emp.profile.name;
@@ -1393,9 +1493,9 @@ function submitResetMac_(token, shd) {
   }
 }
 
-function resetMacStatus_(token, id) {
+function resetMacStatus_(token, id, emailHint) {
   try {
-    const email = sessionEmailFast_(token);
+    const email = sessionEmailFast_(token, emailHint);
     if (!email) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
     id = String(id || '').trim();
     if (!/^\d{1,9}$/.test(id)) return { ok: false, notFound: true, msg: 'Mã yêu cầu không hợp lệ.' };

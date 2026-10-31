@@ -17,40 +17,22 @@ import {
   checkDayConflictFromBlockData,
   EmployeeProfile,
   fetchBlockSchedule,
-  fetchScheduleSuggestions,
   getDaysInMonth,
   submitScheduleRegistration,
-  SuggestEmployeeItem,
 } from '../services/sheetAuthService';
 
 interface ScheduleViewProps {
   profile: EmployeeProfile;
-  onBack: () => void;
-}
-
-function removeVietnameseTones(str: string): string {
-  return String(str || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/đ/g, 'd');
 }
 
 /**
- * Giao diện Đăng Ký Lịch Trực / Off theo Block.
- * - Tự động tra cứu theo tài khoản đang đăng nhập ngay khi mở (hoặc tìm kiếm nhân sự khác).
- * - Hiển thị Thông tin nhân sự + Số nhân sự trong Block.
- * - Chọn Tháng / Năm -> Xem bảng Lịch trực / Off của toàn bộ nhân sự cùng Block (1..31).
+ * Tab "Lịch trực": Đăng ký Lịch Trực / Off theo Block.
+ * - Chỉ hiển thị thông tin của nhân sự đang đăng nhập và Block của nhân sự đó (không tìm kiếm người khác).
+ * - Chọn Tháng T1..T12 + Năm -> Xem bảng Lịch trực / Off của toàn bộ nhân sự cùng Block.
  * - Chọn Ngày + CA1 / O (Off cả ngày) -> Kiểm tra trùng OFF trong Block -> Lưu đăng ký.
  */
-export const ScheduleView: React.FC<ScheduleViewProps> = ({
-  profile,
-  onBack,
-}) => {
+export const ScheduleView: React.FC<ScheduleViewProps> = ({ profile }) => {
   const now = new Date();
-  const [searchInput, setSearchInput] = useState<string>(profile.email);
-  const [suggestions, setSuggestions] = useState<SuggestEmployeeItem[]>([]);
-  const [showSuggestions, setShowSuggestions] = useState<boolean>(false);
 
   const [thang, setThang] = useState<string>(String(now.getMonth() + 1));
   const [nam, setNam] = useState<string>(String(now.getFullYear()));
@@ -65,34 +47,18 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   const [bypassPassword, setBypassPassword] = useState<string>('');
   const [showDayPickerModal, setShowDayPickerModal] = useState<boolean>(false);
 
-  // Tải danh sách gợi ý tìm kiếm và tự động tra cứu lịch của nhân viên đang đăng nhập
-  useEffect(() => {
-    fetchScheduleSuggestions().then((ds) => setSuggestions(ds));
-    handleLookup(profile.email, now.getMonth() + 1, now.getFullYear());
-  }, [profile.email]);
-
   const handleLookup = useCallback(
-    async (targetEmail?: string, targetMonth?: number, targetYear?: number) => {
-      const mailToQuery = (targetEmail ?? searchInput).trim();
+    async (targetMonth?: number, targetYear?: number) => {
       const m = Number(targetMonth ?? thang) || now.getMonth() + 1;
       const y = Number(targetYear ?? nam) || now.getFullYear();
 
-      if (!mailToQuery) {
-        setErrorText('Vui lòng nhập email nhân viên.');
-        return;
-      }
-
       setErrorText(null);
-      setShowSuggestions(false);
       setLoading(true);
-      const data = await fetchBlockSchedule(mailToQuery, m, y);
+      const data = await fetchBlockSchedule(profile.email, m, y);
       setLoading(false);
 
       if (!data.found) {
-        setErrorText(
-          data.message ||
-            'Không tìm thấy nhân viên với email này trong danh sách Nhân Sự.'
-        );
+        setErrorText(data.message || 'Không tìm thấy thông tin nhân sự của bạn.');
         setBlockData(null);
         return;
       }
@@ -103,8 +69,13 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
         setSelectedDay(maxD);
       }
     },
-    [searchInput, thang, nam, selectedDay]
+    [profile.email, thang, nam, selectedDay]
   );
+
+  // Tự động tải lịch của nhân viên đang đăng nhập khi mở tab
+  useEffect(() => {
+    handleLookup(now.getMonth() + 1, now.getFullYear());
+  }, [profile.email]);
 
   // Kiểm tra xung đột ngày đang chọn
   const conflictInfo = blockData
@@ -128,7 +99,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
 
     setSaving(true);
     const res = await submitScheduleRegistration(
-      blockData.mail,
+      profile.email,
       m,
       y,
       selectedDay,
@@ -145,131 +116,27 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
 
     setBypassPassword('');
     Alert.alert('Thành công', res.message);
-    handleLookup(blockData.mail, m, y);
+    handleLookup(m, y);
   };
-
-  // Gợi ý tự động khi gõ tên hoặc email
-  const filteredSuggestions = searchInput.trim()
-    ? suggestions
-        .filter((nv) => {
-          const key = removeVietnameseTones(searchInput.trim());
-          return (
-            removeVietnameseTones(nv.mail).includes(key) ||
-            removeVietnameseTones(nv.hoTen).includes(key)
-          );
-        })
-        .slice(0, 6)
-    : [];
 
   return (
     <View style={styles.container}>
-      {/* Nút quay lại */}
-      <TouchableOpacity style={styles.backBtn} onPress={onBack}>
-        <Ionicons name="arrow-back" size={18} color="#0066FF" />
-        <Text style={styles.backBtnText}>Quay lại danh mục tác vụ</Text>
-      </TouchableOpacity>
-
-      {/* Tiêu đề */}
       <Text style={styles.pageTitle}>📅 Đăng Ký Lịch Trực / Off</Text>
       <Text style={styles.pageSub}>
-        Tra cứu thông tin nhân viên và đăng ký ngày CA1 / OFF trong Block của bạn.
+        Lịch trực của bạn và các nhân sự cùng Block.
       </Text>
 
-      {/* KHỐI 1: TRA CỨU NHÂN VIÊN */}
-      <LinearGradient
-        colors={['#2563EB', '#1E40AF']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.searchCard}
-      >
-        <Text style={styles.searchLabel}>🔎 Tra cứu nhân viên</Text>
-        <View style={styles.searchRow}>
-          <View style={styles.searchInputWrap}>
-            <Ionicons
-              name="search-outline"
-              size={18}
-              color="#64748B"
-              style={{ marginRight: 8 }}
-            />
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Nhập tên hoặc email nhân viên..."
-              placeholderTextColor="#94A3B8"
-              autoCapitalize="none"
-              value={searchInput}
-              onFocus={() => setShowSuggestions(true)}
-              onChangeText={(t) => {
-                setSearchInput(t);
-                setShowSuggestions(true);
-              }}
-              onSubmitEditing={() => handleLookup()}
-            />
-            {searchInput.length > 0 && (
-              <TouchableOpacity
-                onPress={() => {
-                  setSearchInput('');
-                  setShowSuggestions(false);
-                }}
-              >
-                <Ionicons name="close-circle" size={18} color="#94A3B8" />
-              </TouchableOpacity>
-            )}
-          </View>
-
-          <TouchableOpacity
-            style={styles.lookupBtn}
-            disabled={loading}
-            onPress={() => handleLookup()}
-          >
-            {loading ? (
-              <ActivityIndicator size="small" color="#1D4ED8" />
-            ) : (
-              <Text style={styles.lookupBtnText}>Tra cứu</Text>
-            )}
-          </TouchableOpacity>
+      {loading && !blockData && (
+        <View style={{ paddingVertical: 24, alignItems: 'center' }}>
+          <ActivityIndicator size="large" color="#1D4ED8" />
         </View>
+      )}
 
-        {/* Gợi ý tự động */}
-        {showSuggestions && filteredSuggestions.length > 0 && (
-          <View style={styles.suggestBox}>
-            {filteredSuggestions.map((item, i) => (
-              <TouchableOpacity
-                key={`${item.mail}_${i}`}
-                style={styles.suggestItem}
-                onPress={() => {
-                  setSearchInput(item.mail);
-                  setShowSuggestions(false);
-                  handleLookup(item.mail);
-                }}
-              >
-                <View style={styles.suggestAvatar}>
-                  <Text style={styles.suggestAvatarText}>
-                    {(item.hoTen || item.mail).charAt(0).toUpperCase()}
-                  </Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.suggestName} numberOfLines={1}>
-                    {item.hoTen}
-                  </Text>
-                  <Text style={styles.suggestMeta} numberOfLines={1}>
-                    {item.mail} · {item.block}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
-
-        <Text style={styles.searchHint}>
-          Gõ vài ký tự tên hoặc email để hệ thống gợi ý.
-        </Text>
-
-        {errorText && (
-          <View style={styles.errorBox}>
-            <Text style={styles.errorText}>⚠️ {errorText}</Text>
-          </View>
-        )}
-      </LinearGradient>
+      {errorText && (
+        <View style={styles.errorBox}>
+          <Text style={styles.errorText}>⚠️ {errorText}</Text>
+        </View>
+      )}
 
       {/* KHỐI 2: THÔNG TIN NHÂN VIÊN & BLOCK */}
       {blockData && (
@@ -297,39 +164,63 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
             </View>
           </View>
 
-          {/* KHỐI 3: CHỌN THÁNG / NĂM */}
+          {/* KHỐI 3: CHỌN THÁNG (T1..T12) / NĂM */}
           <View style={styles.card}>
-            <View style={styles.monthYearRow}>
-              <View style={styles.monthYearCol}>
-                <Text style={styles.fieldLabel}>Tháng</Text>
-                <TextInput
-                  style={styles.numberInput}
-                  keyboardType="number-pad"
-                  value={thang}
-                  onChangeText={setThang}
-                  maxLength={2}
-                />
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <Text style={styles.fieldLabel}>Tháng</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <TouchableOpacity
+                  onPress={() => {
+                    const y = Number(nam) - 1;
+                    setNam(String(y));
+                    handleLookup(Number(thang), y);
+                  }}
+                  style={{ padding: 4 }}
+                >
+                  <Ionicons name="chevron-back" size={20} color="#1D4ED8" />
+                </TouchableOpacity>
+                <Text style={{ fontWeight: '800', fontSize: 15, color: '#0F172A' }}>Năm {nam}</Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    const y = Number(nam) + 1;
+                    setNam(String(y));
+                    handleLookup(Number(thang), y);
+                  }}
+                  style={{ padding: 4 }}
+                >
+                  <Ionicons name="chevron-forward" size={20} color="#1D4ED8" />
+                </TouchableOpacity>
               </View>
-              <View style={styles.monthYearCol}>
-                <Text style={styles.fieldLabel}>Năm</Text>
-                <TextInput
-                  style={styles.numberInput}
-                  keyboardType="number-pad"
-                  value={nam}
-                  onChangeText={setNam}
-                  maxLength={4}
-                />
-              </View>
-              <TouchableOpacity
-                style={styles.viewBlockBtn}
-                disabled={loading}
-                onPress={() =>
-                  handleLookup(blockData.mail, Number(thang), Number(nam))
-                }
-              >
-                <Text style={styles.viewBlockBtnText}>Xem lịch Block</Text>
-              </TouchableOpacity>
             </View>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => {
+                const active = Number(thang) === m;
+                return (
+                  <TouchableOpacity
+                    key={m}
+                    disabled={loading}
+                    onPress={() => {
+                      setThang(String(m));
+                      handleLookup(m, Number(nam));
+                    }}
+                    style={{
+                      width: '22%',
+                      paddingVertical: 10,
+                      borderRadius: 12,
+                      alignItems: 'center',
+                      borderWidth: 1,
+                      borderColor: active ? '#1D4ED8' : '#CBD5E1',
+                      backgroundColor: active ? '#1D4ED8' : '#FFFFFF',
+                    }}
+                  >
+                    <Text style={{ fontWeight: '800', color: active ? '#FFFFFF' : '#334155' }}>T{m}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            {loading && (
+              <ActivityIndicator style={{ marginTop: 10 }} size="small" color="#1D4ED8" />
+            )}
           </View>
 
           {/* KHỐI 4: BẢNG LỊCH TRỰC / OFF CỦA BLOCK */}
