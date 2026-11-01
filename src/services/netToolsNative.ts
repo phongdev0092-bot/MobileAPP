@@ -6,6 +6,7 @@ export interface NetToolsBridge {
   pingOnce(host: string, ttl: number, timeoutSec: number): Promise<string>;
   resolveHost(host: string): Promise<string[]>;
   tcpPingOnce(host: string, port: number, timeoutMs: number): Promise<number>;
+  getWifiDetails?(): Promise<{ gateway: string; ssid: string; ipAddress: string }>;
 }
 
 export function hasNativeNetTools(): boolean {
@@ -111,4 +112,22 @@ export async function tcpPingOnceNative(
     const duration = Math.max(1, Math.round(performance.now() - start));
     return duration;
   }
+}
+
+/**
+ * Lấy thông tin chi tiết Wi-Fi (SSID, Gateway, IP) trực tiếp từ Native Module Android
+ */
+export async function getWifiDetailsNative(): Promise<{
+  gateway: string;
+  ssid: string;
+  ipAddress: string;
+} | null> {
+  if (hasNativeNetTools() && typeof NetTools.getWifiDetails === 'function') {
+    try {
+      return await NetTools.getWifiDetails();
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }

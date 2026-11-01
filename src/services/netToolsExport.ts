@@ -4,14 +4,43 @@
  * Lưu trữ lâu dài qua AsyncStorage
  */
 
+import { PermissionsAndroid, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo, { NetInfoState } from '@react-native-community/netinfo';
 import { PingResult } from './ping';
 import { TracerouteResult } from './traceroute';
 import { DnsLookupResult } from './nslookup';
+import { getWifiDetailsNative } from './netToolsNative';
 
 const HISTORY_STORAGE_KEY = '@nextsu_nettools_history_v1';
 const MAX_HISTORY_ITEMS = 50;
+
+/**
+ * Yêu cầu quyền vị trí trên Android (Bắt buộc từ Android 8.1 - Android 14 để đọc được tên Wi-Fi SSID)
+ */
+export async function requestWifiPermission(): Promise<boolean> {
+  if (Platform.OS !== 'android') return true;
+  try {
+    const hasFine = await PermissionsAndroid.check(
+      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
+    );
+    if (hasFine) return true;
+
+    const res = await PermissionsAndroid.request(
+      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+      {
+        title: 'Quyền đọc thông tin Wi-Fi',
+        message:
+          'Hệ điều hành Android yêu cầu cấp quyền Vị trí (Location) để ứng dụng có thể tự động nhận diện tên Wi-Fi (SSID) mà điện thoại đang bắt.',
+        buttonPositive: 'Cho phép',
+        buttonNegative: 'Bỏ qua',
+      }
+    );
+    return res === PermissionsAndroid.RESULTS.GRANTED;
+  } catch {
+    return false;
+  }
+}
 
 export interface NetworkSnapshot {
   type: string; // 'Wi-Fi' | '4G' | '5G' | 'Di động' | 'Khác'
@@ -38,58 +67,90 @@ export interface NetToolHistoryItem {
 
 /**
  * Lấy ảnh chụp thông tin mạng hiện tại (Wi-Fi / 4G / 5G, IP, Gateway)
+ * Kết hợp Native Module Android và NetInfo để lấy chính xác SSID thực tế từ điện thoại.
  */
 export async function getCurrentNetworkSnapshot(): Promise<NetworkSnapshot> {
   try {
-    const state: NetInfoState = await NetInfo.fetch();
-    let displayType = 'Không xác định';
-    let ip = '192.168.1.7';
-    let gateway = '192.168.1.1';
+    let displayType = 'Wi-Fi';
+    let ip = '';
+    let gateway = '';
     let carrier: string | undefined;
-    let ssid: string | undefined = 'FPT_Telecom_Wi-Fi';
+    let ssid: string | undefined = '';
 
+    // 1. Thử gọi Native Module Android trước (đọc trực tiếp từ WifiManager / ConnectivityManager)
+    const nativeDetails = await getWifiDetailsNative();
+    if (nativeDetails) {
+      if (nativeDetails.gateway && nativeDetails.gateway !== '0.0.0.0') {
+        gateway = nativeDetails.gateway;
+      }
+      if (nativeDetails.ipAddress && nativeDetails.ipAddress !== '0.0.0.0') {
+        ip = nativeDetails.ipAddress;
+      }
+      if (
+        nativeDetails.ssid &&
+        nativeDetails.ssid !== '<unknown ssid>' &&
+        nativeDetails.ssid !== 'Wi-Fi' &&
+        nativeDetails.ssid.trim().length > 0
+      ) {
+        ssid = nativeDetails.ssid;
+      }
+    }
+
+    // 2. Lấy thêm thông tin từ NetInfo
+    const state: NetInfoState = await NetInfo.fetch();
     if (state.type === 'wifi') {
       displayType = 'Wi-Fi';
       const details = state.details as any;
-      if (details?.ipAddress) ip = details.ipAddress;
-      if (details?.ssid) ssid = details.ssid;
-      if (details?.gateway) gateway = details.gateway;
+      if (!ip && details?.ipAddress) ip = details.ipAddress;
+      if (!ssid && details?.ssid && details.ssid !== '<unknown ssid>') ssid = details.ssid;
+      if (!gateway && details?.gateway) gateway = details.gateway;
     } else if (state.type === 'cellular') {
       const details = state.details as any;
       const gen = details?.cellularGeneration;
       displayType = gen ? gen.toUpperCase() : 'Di động (4G/5G)';
       if (details?.carrier) carrier = details.carrier;
-      gateway = '10.0.0.1';
+      if (!gateway) gateway = '10.0.0.1';
     } else if (state.type === 'ethernet') {
       displayType = 'Ethernet';
       const details = state.details as any;
       if (details?.ipAddress) ip = details.ipAddress;
     }
 
-    // Tự động suy ra gateway từ địa chỉ IP mạng nội bộ nếu chưa có
-    if (gateway === '192.168.1.1' && ip && ip.includes('.')) {
+    // 3. Tự động suy ra gateway từ địa chỉ IP mạng nội bộ nếu chưa có
+    if ((!gateway || gateway === '192.168.1.1') && ip && ip.includes('.')) {
       const parts = ip.split('.');
       if (parts.length === 4 && parts[0] !== '127') {
         gateway = `${parts[0]}.${parts[1]}.${parts[2]}.1`;
       }
     }
 
+    // 4. Nếu chưa lấy được SSID (do chưa bật GPS hoặc chưa cấp quyền Android), kiểm tra tên đã lưu
+    if (!ssid || ssid === '<unknown ssid>' || ssid === 'Wi-Fi' || ssid.trim() === '') {
+      const savedCustom = await AsyncStorage.getItem('@nextsu_custom_wifi_name');
+      if (savedCustom && savedCustom.trim()) {
+        ssid = savedCustom.trim();
+      } else {
+        ssid = 'Chưa bật GPS / Cấp quyền';
+      }
+    }
+
     return {
       type: displayType,
       rawType: state.type,
-      ipAddress: ip,
-      gateway,
+      ipAddress: ip || '192.168.1.7',
+      gateway: gateway || '192.168.1.1',
       carrier,
       ssid,
       isConnected: state.isConnected ?? true,
     };
   } catch {
+    const savedCustom = await AsyncStorage.getItem('@nextsu_custom_wifi_name').catch(() => null);
     return {
       type: 'Wi-Fi',
       rawType: 'wifi',
       ipAddress: '192.168.1.7',
       gateway: '192.168.1.1',
-      ssid: 'FPT_Telecom_Wi-Fi',
+      ssid: savedCustom || 'Chưa bật GPS / Cấp quyền',
       isConnected: true,
     };
   }

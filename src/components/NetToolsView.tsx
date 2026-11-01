@@ -33,6 +33,7 @@ import {
 } from '../services/nslookup';
 import {
   getCurrentNetworkSnapshot,
+  requestWifiPermission,
   saveNetToolResult,
   loadNetToolHistory,
   clearNetToolHistory,
@@ -127,11 +128,15 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
   const [copiedNotice, setCopiedNotice] = useState<string>('');
 
   useEffect(() => {
-    // Tải tên Wi-Fi đã lưu
+    // Tự động yêu cầu quyền Vị trí trên Android để đọc tên Wi-Fi thực tế của máy
+    requestWifiPermission()
+      .then(() => refreshNetworkInfo(false))
+      .catch(() => refreshNetworkInfo(false));
+
+    // Tải tên Wi-Fi đã lưu thủ công nếu có
     AsyncStorage.getItem('@nextsu_custom_wifi_name').then((saved) => {
       if (saved) setWifiSsid(saved);
     });
-    refreshNetworkInfo();
     loadHistory();
   }, []);
 
@@ -144,7 +149,10 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
     }
   }, [cmdLogs, viewMode]);
 
-  const refreshNetworkInfo = async () => {
+  const refreshNetworkInfo = async (promptPermission: boolean = false) => {
+    if (promptPermission) {
+      await requestWifiPermission();
+    }
     const info = await getCurrentNetworkSnapshot();
     setNetworkInfo(info);
     if (info.ssid && info.ssid !== '<unknown ssid>' && info.ssid !== 'Wi-Fi') {
@@ -656,9 +664,18 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
           <View style={styles.wifiGreenPulse} />
         </View>
         <View style={styles.wifiTextWrap}>
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
             <Text style={styles.wifiTitleLabel}>WI-FI ĐANG BẮT: </Text>
             <Text style={styles.wifiNameHighlight}>{wifiSsid}</Text>
+            {wifiSsid.includes('GPS') || wifiSsid.includes('quyền') || wifiSsid.includes('unknown') ? (
+              <TouchableOpacity
+                onPress={() => refreshNetworkInfo(true)}
+                style={styles.grantPermBtn}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.grantPermText}>Cấp quyền / Lấy lại</Text>
+              </TouchableOpacity>
+            ) : null}
             <TouchableOpacity
               onPress={() => {
                 setEditWifiInput(wifiSsid);
@@ -673,7 +690,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
             IP Thiết Bị: {networkInfo?.ipAddress || '192.168.1.7'}  •  Gateway Modem: {networkInfo?.gateway || '192.168.1.1'}
           </Text>
         </View>
-        <TouchableOpacity style={styles.refreshWifiButton} onPress={refreshNetworkInfo}>
+        <TouchableOpacity style={styles.refreshWifiButton} onPress={() => refreshNetworkInfo(true)}>
           <Ionicons name="refresh" size={16} color="#64748B" />
         </TouchableOpacity>
       </View>
@@ -1819,6 +1836,20 @@ const styles = StyleSheet.create({
   editWifiIconBtn: {
     marginLeft: 6,
     padding: 3,
+  },
+  grantPermBtn: {
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#F59E0B',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+    marginLeft: 6,
+  },
+  grantPermText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#B45309',
   },
   wifiSubDetails: {
     fontSize: 10,

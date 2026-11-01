@@ -133,10 +133,15 @@ class NetToolsModule(private val reactContext: ReactApplicationContext) :
         Thread {
             try {
                 val map = Arguments.createMap()
-                val wm = reactContext.applicationContext.getSystemService(android.content.Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
-                var gateway = "192.168.1.1"
-                var ssid = "Wi-Fi"
+                val context = reactContext.applicationContext
+                val wm = context.getSystemService(android.content.Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+                val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
 
+                var gateway = ""
+                var ssid = ""
+                var ip = ""
+
+                // 1. Thử lấy thông tin từ WifiManager (DhcpInfo và ConnectionInfo)
                 if (wm != null) {
                     val dhcp = wm.dhcpInfo
                     if (dhcp != null && dhcp.gateway != 0) {
@@ -148,20 +153,76 @@ class NetToolsModule(private val reactContext: ReactApplicationContext) :
                             dhcp.gateway shr 24 and 0xff
                         )
                     }
+                    if (dhcp != null && dhcp.ipAddress != 0) {
+                        ip = String.format(
+                            "%d.%d.%d.%d",
+                            dhcp.ipAddress and 0xff,
+                            dhcp.ipAddress shr 8 and 0xff,
+                            dhcp.ipAddress shr 16 and 0xff,
+                            dhcp.ipAddress shr 24 and 0xff
+                        )
+                    }
                     val info = wm.connectionInfo
                     if (info != null && info.ssid != null) {
-                        val s = info.ssid.replace("\"", "")
-                        if (s != "<unknown ssid>") ssid = s
+                        val s = info.ssid.replace("\"", "").trim()
+                        if (s.isNotEmpty() && s != "<unknown ssid>") {
+                            ssid = s
+                        }
                     }
                 }
 
-                map.putString("gateway", gateway)
+                // 2. Thử lấy từ ConnectivityManager trên Android 10+ (API 29+)
+                if (ssid.isEmpty() && cm != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    val activeNet = cm.activeNetwork
+                    val caps = cm.getNetworkCapabilities(activeNet)
+                    if (caps != null && caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)) {
+                        val wifiInfo = caps.transportInfo as? android.net.wifi.WifiInfo
+                        if (wifiInfo != null && wifiInfo.ssid != null) {
+                            val s = wifiInfo.ssid.replace("\"", "").trim()
+                            if (s.isNotEmpty() && s != "<unknown ssid>") {
+                                ssid = s
+                            }
+                        }
+                    }
+                }
+
+                // 3. Fallback lấy IP từ NetworkInterface nếu ip chưa có
+                if (ip.isEmpty()) {
+                    try {
+                        val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+                        while (interfaces.hasMoreElements()) {
+                            val intf = interfaces.nextElement()
+                            if (intf.isUp && !intf.isLoopback) {
+                                val addrs = intf.inetAddresses
+                                while (addrs.hasMoreElements()) {
+                                    val addr = addrs.nextElement()
+                                    if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
+                                        ip = addr.hostAddress ?: ""
+                                        break
+                                    }
+                                }
+                            }
+                            if (ip.isNotEmpty()) break
+                        }
+                    } catch (ignored: Exception) {}
+                }
+
+                if (gateway.isEmpty() && ip.isNotEmpty() && ip.contains(".")) {
+                    val parts = ip.split(".")
+                    if (parts.size == 4) {
+                        gateway = "${parts[0]}.${parts[1]}.${parts[2]}.1"
+                    }
+                }
+
+                map.putString("gateway", if (gateway.isNotEmpty()) gateway else "192.168.1.1")
                 map.putString("ssid", ssid)
+                map.putString("ipAddress", if (ip.isNotEmpty()) ip else "192.168.1.7")
                 promise.resolve(map)
             } catch (e: Exception) {
                 val map = Arguments.createMap()
                 map.putString("gateway", "192.168.1.1")
-                map.putString("ssid", "Wi-Fi")
+                map.putString("ssid", "")
+                map.putString("ipAddress", "192.168.1.7")
                 promise.resolve(map)
             }
         }.start()
