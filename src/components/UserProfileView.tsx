@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppIcon, Key, LogOut, Pencil, Save, X } from './AppIcon';
 import {
   ActivityIndicator,
   Avatar,
@@ -147,13 +148,17 @@ export const UserProfileView: React.FC<Props> = ({ token, profile, onChangePassw
     );
   }
 
-  const ro = (label: string, value?: string, icon = 'information-outline') => (
+  const ro = (label: string, value?: string, iconName = 'information-outline') => (
     <List.Item
       title={value || '—'}
       description={label}
       titleStyle={styles.roValue}
       descriptionStyle={styles.roLabel}
-      left={(p) => <List.Icon {...p} icon={icon} />}
+      left={() => (
+        <View style={styles.roIconCircle}>
+          <AppIcon name={iconName} size={18} color="#0072FF" strokeWidth={2.2} />
+        </View>
+      )}
     />
   );
 
@@ -182,7 +187,7 @@ export const UserProfileView: React.FC<Props> = ({ token, profile, onChangePassw
             <View style={styles.headerBtnRow}>
               <Button
                 mode="outlined"
-                icon="key-outline"
+                icon={() => <Key size={15} color="#0072FF" strokeWidth={2.2} />}
                 onPress={onChangePassword}
                 style={styles.headerHalfBtn}
                 contentStyle={{ height: 38 }}
@@ -192,7 +197,7 @@ export const UserProfileView: React.FC<Props> = ({ token, profile, onChangePassw
               </Button>
               <Button
                 mode="contained-tonal"
-                icon="logout"
+                icon={() => <LogOut size={15} color="#B91C1C" strokeWidth={2.2} />}
                 onPress={onLogout}
                 style={styles.headerHalfBtn}
                 contentStyle={{ height: 38 }}
@@ -228,7 +233,10 @@ export const UserProfileView: React.FC<Props> = ({ token, profile, onChangePassw
             titleVariant="titleMedium"
             right={() =>
               !editing ? (
-                <Button icon="pencil" onPress={() => setEditing(true)}>
+                <Button
+                  icon={() => <Pencil size={14} color="#0072FF" strokeWidth={2.2} />}
+                  onPress={() => setEditing(true)}
+                >
                   Sửa
                 </Button>
               ) : null
@@ -290,6 +298,7 @@ export const UserProfileView: React.FC<Props> = ({ token, profile, onChangePassw
               <View style={styles.editActions}>
                 <Button
                   mode="outlined"
+                  icon={() => <X size={15} color="#64748B" strokeWidth={2.2} />}
                   onPress={() => {
                     setEditing(false);
                     if (data) {
@@ -300,7 +309,14 @@ export const UserProfileView: React.FC<Props> = ({ token, profile, onChangePassw
                 >
                   Hủy
                 </Button>
-                <Button mode="contained" onPress={save} loading={saving} disabled={saving} style={{ flex: 1 }}>
+                <Button
+                  mode="contained"
+                  icon={() => <Save size={15} color="#FFFFFF" strokeWidth={2.2} />}
+                  onPress={save}
+                  loading={saving}
+                  disabled={saving}
+                  style={{ flex: 1 }}
+                >
                   Lưu
                 </Button>
               </View>
@@ -325,6 +341,17 @@ const styles = StyleSheet.create({
   headerBtnRow: { flexDirection: 'row', gap: 10, marginTop: 14, width: '100%' },
   headerHalfBtn: { flex: 1, borderRadius: 12 },
   card: { marginBottom: 12, backgroundColor: '#FFFFFF' },
+  roIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#EFF6FF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 4,
+    marginRight: 8,
+    alignSelf: 'center',
+  },
   roLabel: { fontSize: 12, color: '#64748B' },
   roValue: { fontSize: 15, fontWeight: '600', color: '#0F172A' },
   editActions: { flexDirection: 'row', gap: 10, marginTop: 4 },

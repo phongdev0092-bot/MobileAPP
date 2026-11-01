@@ -14,6 +14,7 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { MD3LightTheme, PaperProvider } from 'react-native-paper';
 import { Clock } from 'lucide-react-native';
+import { AppIcon } from './src/components/AppIcon';
 
 const paperTheme = {
   ...MD3LightTheme,
@@ -164,7 +165,18 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <PaperProvider theme={paperTheme}>
+      <PaperProvider
+        theme={paperTheme}
+        settings={{
+          icon: (props) => (
+            <AppIcon
+              name={typeof props.name === 'string' ? props.name : 'info'}
+              size={props.size || 20}
+              color={props.color || '#0072FF'}
+            />
+          ),
+        }}
+      >
       <View
         style={styles.statusBarBackground}
         onStartShouldSetResponderCapture={() => {
