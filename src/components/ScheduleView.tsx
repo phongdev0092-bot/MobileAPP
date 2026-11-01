@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from './AppIcon';
 import {
   BlockScheduleData,
   checkDayConflictFromBlockData,

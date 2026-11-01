@@ -1,0 +1,233 @@
+import React from 'react';
+import { StyleProp, ViewStyle } from 'react-native';
+import {
+  Activity,
+  AlertCircle,
+  ArrowLeft,
+  Briefcase,
+  Calendar,
+  Camera,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Code,
+  Copy,
+  Cpu,
+  Download,
+  Eye,
+  EyeOff,
+  FileCheck,
+  FileText,
+  Image,
+  Inbox,
+  Info,
+  Key,
+  Lock,
+  Navigation,
+  Network,
+  Pencil,
+  Play,
+  RefreshCw,
+  Rocket,
+  Search,
+  Send,
+  Share2,
+  ShieldCheck,
+  Square,
+  StopCircle,
+  Terminal,
+  Trash2,
+  User,
+  Users,
+  Wifi,
+  X,
+  XCircle,
+  Zap,
+  LucideIcon,
+} from 'lucide-react-native';
+
+/**
+ * Bản đồ chuyển đổi tên icon sang biểu tượng vector SVG Lucide (Feather MIT/ISC).
+ * Toàn bộ icon được vẽ bằng đường nét cong SVG thuần túy qua react-native-svg,
+ * TUYỆT ĐỐI KHÔNG phụ thuộc vào file font .ttf, không bị lỗi ô vuông hay mất icon trên Android/APK.
+ */
+const ICON_MAP: Record<string, LucideIcon> = {
+  // Điều hướng & Thao tác
+  'arrow-back': ArrowLeft,
+  'arrow-left': ArrowLeft,
+  'chevron-back': ChevronLeft,
+  'chevron-forward': ChevronRight,
+  'chevron-down': ChevronDown,
+  'close': X,
+  'x': X,
+  'close-circle': XCircle,
+  'close-circle-outline': XCircle,
+  'checkmark-circle': CheckCircle2,
+  'checkmark-circle-outline': CheckCircle2,
+  'checkmark': Check,
+  'check': Check,
+
+  // 9 Thẻ tác vụ chính
+  'flash': Zap,
+  'zap': Zap,
+  'camera': Camera,
+  'camera-outline': Camera,
+  'people': Users,
+  'users': Users,
+  'rocket': Rocket,
+  'refresh-circle': RefreshCw,
+  'refresh-cw': RefreshCw,
+  'refresh': RefreshCw,
+  'sync-outline': RefreshCw,
+  'git-network': Network,
+  'network': Network,
+  'shield-checkmark': ShieldCheck,
+  'shield': ShieldCheck,
+  'hardware-chip': Cpu,
+  'cpu': Cpu,
+  'search': Search,
+  'search-outline': Search,
+  'pulse': Activity,
+  'activity': Activity,
+
+  // Công cụ mạng (NetTools & CMD)
+  'wifi': Wifi,
+  'terminal': Terminal,
+  'play': Play,
+  'stop': Square,
+  'stop-circle': StopCircle,
+  'navigate': Navigation,
+  'link': Network,
+  'code-slash': Code,
+  'code': Code,
+  'copy': Copy,
+  'download': Download,
+  'share-social': Share2,
+  'share': Share2,
+  'document-text': FileText,
+  'time': Clock,
+  'clock': Clock,
+  'file-tray': Inbox,
+  'file-tray-full': Inbox,
+  'file-tray-full-outline': Inbox,
+
+  // Thanh điều hướng dưới đáy (Bottom Navigation) & Hồ sơ người dùng
+  'briefcase': Briefcase,
+  'briefcase-outline': Briefcase,
+  'clipboard': FileCheck,
+  'clipboard-outline': FileCheck,
+  'clipboard-text-clock': FileCheck,
+  'clipboard-text-clock-outline': FileCheck,
+  'calendar': Calendar,
+  'calendar-outline': Calendar,
+  'calendar-month': Calendar,
+  'calendar-month-outline': Calendar,
+  'user': User,
+  'person': User,
+  'person-outline': User,
+  'person-circle': User,
+  'person-circle-outline': User,
+  'account-circle': User,
+  'account-circle-outline': User,
+
+  // Biểu mẫu, Đăng nhập & Xác thực
+  'pencil': Pencil,
+  'edit': Pencil,
+  'key': Key,
+  'key-outline': Key,
+  'lock': Lock,
+  'lock-closed': Lock,
+  'lock-closed-outline': Lock,
+  'eye': Eye,
+  'eye-off': EyeOff,
+  'alert-circle': AlertCircle,
+  'alert-circle-outline': AlertCircle,
+  'information-circle': Info,
+  'information-circle-outline': Info,
+  'info': Info,
+  'trash': Trash2,
+  'trash-outline': Trash2,
+  'paper-plane-outline': Send,
+  'paper-plane': Send,
+  'send': Send,
+  'images': Image,
+  'image': Image,
+};
+
+export interface AppIconProps {
+  name: string;
+  size?: number;
+  color?: string;
+  strokeWidth?: number;
+  style?: StyleProp<ViewStyle>;
+}
+
+/**
+ * Thành phần Icon SVG chung (Lucide / Feather SVG).
+ * Thay thế hoàn toàn @expo/vector-icons và Font TTF.
+ */
+export const AppIcon: React.FC<AppIconProps> = ({
+  name,
+  size = 20,
+  color = '#000000',
+  strokeWidth = 2,
+  style,
+}) => {
+  const IconComp = ICON_MAP[name] || ICON_MAP[name.toLowerCase()] || Activity;
+  return <IconComp size={size} color={color} strokeWidth={strokeWidth} style={style} />;
+};
+
+// Export bí danh Ionicons để tương thích ngược 100% với toàn bộ code hiện hữu
+export const Ionicons = AppIcon;
+
+// Export trực tiếp các icon Lucide phổ biến
+export {
+  Activity,
+  AlertCircle,
+  ArrowLeft,
+  Briefcase,
+  Calendar,
+  Camera,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Code,
+  Copy,
+  Cpu,
+  Download,
+  Eye,
+  EyeOff,
+  FileCheck,
+  FileText,
+  Image,
+  Inbox,
+  Info,
+  Key,
+  Lock,
+  Navigation,
+  Network,
+  Pencil,
+  Play,
+  RefreshCw,
+  Rocket,
+  Search,
+  Send,
+  Share2,
+  ShieldCheck,
+  Square,
+  StopCircle,
+  Terminal,
+  Trash2,
+  User,
+  Users,
+  Wifi,
+  X,
+  XCircle,
+  Zap,
+};

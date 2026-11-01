@@ -20,7 +20,7 @@ import {
   Image,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, Wifi } from './AppIcon';
 import { QUICK_HOSTS, validateHostInput } from '../utils/hostValidator';
 import { executePing, PingPacket, PingResult } from '../services/ping';
 import { executeTraceroute, TracerouteHop, TracerouteResult } from '../services/traceroute';
@@ -652,7 +652,7 @@ export const NetToolsView: React.FC<NetToolsViewProps> = ({ onBack }) => {
       {/* ========================================================================= */}
       <View style={styles.wifiBannerCard}>
         <View style={styles.wifiLogoCircle}>
-          <Ionicons name="wifi" size={22} color="#0072FF" />
+          <Wifi size={22} color="#0072FF" strokeWidth={2.3} />
           <View style={styles.wifiGreenPulse} />
         </View>
         <View style={styles.wifiTextWrap}>

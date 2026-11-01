@@ -14,7 +14,23 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
+import {
+  Ionicons,
+  Zap,
+  Camera,
+  Users,
+  Rocket,
+  RefreshCw,
+  Network,
+  Cpu,
+  Search,
+  Activity,
+  ShieldCheck,
+  Briefcase,
+  FileCheck,
+  Calendar,
+  User,
+} from './AppIcon';
 import * as ImagePicker from 'expo-image-picker';
 import { CONFIG } from '../config';
 import { Alert } from '../utils/alert';
@@ -1121,7 +1137,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     onPress={() => openTaskTab('BYPASS')}
                   >
                     <View style={[styles.taskIconBox, { backgroundColor: '#E0F2FE' }]}>
-                      <Ionicons name="flash" size={26} color="#0284C7" />
+                      <Zap size={26} color="#0284C7" strokeWidth={2.2} />
                     </View>
                     <Text style={styles.taskCardTitle}>Bypass Công Suất</Text>
                   </TouchableOpacity>
@@ -1133,7 +1149,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     onPress={() => openTaskTab('MYBAE')}
                   >
                     <View style={[styles.taskIconBox, { backgroundColor: '#F3E8FF' }]}>
-                      <Ionicons name="camera" size={26} color="#7C3AED" />
+                      <Camera size={26} color="#7C3AED" strokeWidth={2.2} />
                     </View>
                     <Text style={styles.taskCardTitle}>Bypass NT Mỹ Bảo</Text>
                     <Text style={styles.taskCardDesc}>
@@ -1148,7 +1164,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     onPress={() => openTaskTab('MANUAL')}
                   >
                     <View style={[styles.taskIconBox, { backgroundColor: '#DCFCE7' }]}>
-                      <Ionicons name="people" size={26} color="#16A34A" />
+                      <Users size={26} color="#16A34A" strokeWidth={2.2} />
                     </View>
                     <Text style={styles.taskCardTitle}>Phân Công Tay</Text>
                   </TouchableOpacity>
@@ -1160,7 +1176,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     onPress={() => openTaskTab('SPAM')}
                   >
                     <View style={[styles.taskIconBox, { backgroundColor: '#FFE4E6' }]}>
-                      <Ionicons name="rocket" size={26} color="#E11D48" />
+                      <Rocket size={26} color="#E11D48" strokeWidth={2.2} />
                     </View>
                     <Text style={styles.taskCardTitle}>SpamPool Ưu Tiên</Text>
                   </TouchableOpacity>
@@ -1172,7 +1188,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     onPress={() => openTaskTab('RESETMAC')}
                   >
                     <View style={[styles.taskIconBox, { backgroundColor: '#E0E7FF' }]}>
-                      <Ionicons name="refresh-circle" size={26} color="#4F46E5" />
+                      <RefreshCw size={26} color="#4F46E5" strokeWidth={2.2} />
                     </View>
                     <Text style={styles.taskCardTitle}>Reset MAC</Text>
                   </TouchableOpacity>
@@ -1184,7 +1200,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     onPress={() => openTaskTab('RECALL_PORT')}
                   >
                     <View style={[styles.taskIconBox, { backgroundColor: '#FEF3C7' }]}>
-                      <Ionicons name="git-network" size={26} color="#D97706" />
+                      <Network size={26} color="#D97706" strokeWidth={2.2} />
                     </View>
                     <Text style={styles.taskCardTitle}>Thu Hồi Port</Text>
                   </TouchableOpacity>
@@ -1196,11 +1212,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     onPress={() => openTaskTab('OSP')}
                   >
                     <View style={styles.adminCardBadge}>
-                      <Ionicons name="shield-checkmark" size={10} color="#FFFFFF" />
+                      <ShieldCheck size={11} color="#FFFFFF" strokeWidth={2.5} />
                       <Text style={styles.adminCardBadgeText}>Admin</Text>
                     </View>
                     <View style={[styles.taskIconBox, { backgroundColor: '#FEE2E2' }]}>
-                      <Ionicons name="hardware-chip" size={26} color="#DC2626" />
+                      <Cpu size={26} color="#DC2626" strokeWidth={2.2} />
                     </View>
                     <Text style={styles.taskCardTitle}>OSP</Text>
                   </TouchableOpacity>
@@ -1212,7 +1228,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     onPress={() => openTaskTab('SEARCH_360')}
                   >
                     <View style={[styles.taskIconBox, { backgroundColor: '#CCFBF1' }]}>
-                      <Ionicons name="search" size={26} color="#0F766E" />
+                      <Search size={26} color="#0F766E" strokeWidth={2.2} />
                     </View>
                     <Text style={styles.taskCardTitle}>Tra Cứu 360</Text>
                     <Text style={styles.taskCardDesc}>
@@ -1227,7 +1243,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     onPress={() => openTaskTab('NET_TOOLS')}
                   >
                     <View style={[styles.taskIconBox, { backgroundColor: '#EFF6FF' }]}>
-                      <Ionicons name="pulse" size={26} color="#0072FF" />
+                      <Activity size={26} color="#0072FF" strokeWidth={2.2} />
                     </View>
                     <Text style={styles.taskCardTitle}>Kiểm Tra Mạng</Text>
                     <Text style={styles.taskCardDesc}>
@@ -2125,17 +2141,16 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           ],
         }}
         renderIcon={({ route, focused, color }) => {
-          let iconName: keyof typeof Ionicons.glyphMap = 'briefcase';
           if (route.key === 'work') {
-            iconName = focused ? 'briefcase' : 'briefcase-outline';
+            return <Briefcase size={22} color={color} strokeWidth={focused ? 2.5 : 2} />;
           } else if (route.key === 'requests') {
-            iconName = focused ? 'file-tray-full' : 'file-tray-full-outline';
+            return <FileCheck size={22} color={color} strokeWidth={focused ? 2.5 : 2} />;
           } else if (route.key === 'schedule') {
-            iconName = focused ? 'calendar' : 'calendar-outline';
+            return <Calendar size={22} color={color} strokeWidth={focused ? 2.5 : 2} />;
           } else if (route.key === 'user') {
-            iconName = focused ? 'person-circle' : 'person-circle-outline';
+            return <User size={22} color={color} strokeWidth={focused ? 2.5 : 2} />;
           }
-          return <Ionicons name={iconName} size={22} color={color} />;
+          return <Briefcase size={22} color={color} strokeWidth={2} />;
         }}
         onTabPress={({ route }) => {
           const idx = ['work', 'requests', 'schedule', 'user'].indexOf(route.key);

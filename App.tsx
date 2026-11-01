@@ -12,15 +12,8 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import { useFonts } from 'expo-font';
-import {
-  Ionicons,
-  MaterialCommunityIcons,
-  MaterialIcons,
-  FontAwesome,
-  Feather,
-} from '@expo/vector-icons';
 import { MD3LightTheme, PaperProvider } from 'react-native-paper';
+import { Clock } from 'lucide-react-native';
 
 const paperTheme = {
   ...MD3LightTheme,
@@ -48,13 +41,6 @@ import {
  * - Sau khi đăng nhập thành công: mở giao diện chính Native cho toàn bộ các tác vụ vận hành.
  */
 export default function App() {
-  const [fontsLoaded, fontError] = useFonts({
-    Ionicons: require('@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/Ionicons.ttf'),
-    MaterialCommunityIcons: require('@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/MaterialCommunityIcons.ttf'),
-    MaterialIcons: require('@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/MaterialIcons.ttf'),
-    FontAwesome: require('@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/FontAwesome.ttf'),
-    Feather: require('@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/Feather.ttf'),
-  });
   const [initializing, setInitializing] = useState<boolean>(true);
   const [token, setToken] = useState<string | null>(null);
   const [profile, setProfile] = useState<EmployeeProfile | null>(null);
@@ -199,7 +185,7 @@ export default function App() {
           style={styles.safeArea}
           edges={['top', 'left', 'right', 'bottom']}
         >
-          {initializing || (!fontsLoaded && !fontError) ? (
+          {initializing ? (
             <View style={styles.splashLoading}>
               <ActivityIndicator size="large" color="#00C6FF" />
             </View>
@@ -224,7 +210,7 @@ export default function App() {
             <View style={styles.expiredModalOverlay}>
               <View style={styles.expiredModalCard}>
                 <View style={styles.expiredIconCircle}>
-                  <Ionicons name="time-outline" size={32} color="#DC2626" />
+                  <Clock size={32} color="#DC2626" strokeWidth={2} />
                 </View>
                 <Text style={styles.expiredModalTitle}>Phiên làm việc đã hết hạn</Text>
                 <Text style={styles.expiredModalDesc}>
