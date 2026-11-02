@@ -1553,27 +1553,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                       ))}
                     </View>
 
-                    {/* Hộp thông tin Tác Vụ Sheet tương ứng */}
-                    <View style={styles.targetSheetHintBox}>
-                      <Text style={styles.targetSheetHintText}>
-                        • Tác vụ Sheet:{' '}
-                        <Text style={styles.targetSheetHintBold}>
-                          {
-                            CONFIG.OPTIMIZE_TARGET_OPTIONS.find(
-                              (o) => o.id === optimizeChannelType
-                            )?.sheetTask
-                          }
-                        </Text>{' '}
-                        (GID:{' '}
-                        {
-                          CONFIG.OPTIMIZE_TARGET_OPTIONS.find(
-                            (o) => o.id === optimizeChannelType
-                          )?.gid
-                        }
-                        )
-                      </Text>
-                    </View>
-
                     <Text style={styles.fieldLabel}>CHỌN NGUYÊN NHÂN *</Text>
                     {CONFIG.OPTIMIZE_CAUSE_OPTIONS.map((opt) => (
                       <TouchableOpacity
