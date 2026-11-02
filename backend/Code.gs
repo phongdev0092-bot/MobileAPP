@@ -125,6 +125,20 @@ const RESETMAC = {
   RESULT_NEW: 'Chưa cập nhật'
 };
 
+// Sheet nhận yêu cầu Thu Hồi Port
+const RECALL_PORT = {
+  SHEET_ID: '1Sw-qSbLzvVdcW4rj7ywEZBEzKI6w5M82EQeYJUpdx7M',
+  GID: 966043489,
+  HEADER_ROW: 1,
+  TASK: 'Thu Hồi Port',
+  CAUSE_OPTIONS: ['KH cũ dọn đi', 'HD cũ đã hủy'],
+  CAUSE_OTHER: 'Khác',
+  OTHER_MIN: 1,
+  OTHER_MAX: 200,
+  STATUS_NEW: 'Chưa cập nhật',
+  RESULT_NEW: 'Chưa cập nhật'
+};
+
 // Sheet Lịch trực / Off theo Block
 const LICHTRUC = {
   SHEET_ID: '1qd8O1bqbtHmbPUO_HhZv07YS9c27bo1QMWh4yvmQr2U',
@@ -187,6 +201,9 @@ function handleJsonApi_(req) {
     case 'spamStatus':       res = apiSpamStatus(req.token, req.id, req.email); break;
     case 'resetMacSubmit':   res = apiResetMacSubmit(req.token, req.shd, req.email); break;
     case 'resetMacStatus':   res = apiResetMacStatus(req.token, req.id, req.email); break;
+    case 'recallPortSubmit': res = apiRecallPortSubmit(req.token, req.searchBy, req.shd, req.tapDiem, req.port, req.cause, req.other, req.email); break;
+    case 'recallPortStatus': res = apiRecallPortStatus(req.token, req.id, req.email); break;
+    case 'getTapDiemList':   res = apiGetTapDiemList(req.token); break;
     case 'adminList':        res = apiAdminList(req.token); break;
     case 'adminSave':        res = apiAdminSave(req.token, req.data); break;
     case 'adminDelete':      res = apiAdminDelete(req.token, req.id); break;
@@ -1550,6 +1567,188 @@ function resetMacStatus_(token, id, emailHint) {
 
     const result = String(rv[c['Ket Qua']] || '').normalize('NFC').trim();
     return { ok: true, status: result, note: '', pending: isPendingStatus_(result) };
+  } catch (e) {
+    return serverError_(e);
+  }
+}
+
+/* ===================== Thu Hồi Port ===================== */
+
+function getRecallPortSheet_() {
+  const ss = SpreadsheetApp.openById(RECALL_PORT.SHEET_ID);
+  const sh = ss.getSheets().filter(function (s) { return s.getSheetId() === RECALL_PORT.GID; })[0];
+  if (!sh) throw new Error('Không tìm thấy tab Thu Hồi Port (gid=' + RECALL_PORT.GID + ')');
+  return sh;
+}
+
+function apiRecallPortSubmit(token, searchBy, shd, tapDiem, port, cause, other, emailHint) {
+  return submitRecallPort_(token, searchBy, shd, tapDiem, port, cause, other, emailHint);
+}
+
+function apiRecallPortStatus(token, id, emailHint) {
+  return recallPortStatus_(token, id, emailHint);
+}
+
+function apiGetTapDiemList(token) {
+  try {
+    const s = requireSession_(token);
+    if (!s) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn.' };
+    const ss = SpreadsheetApp.openById('17QLc9SlfpPPrR-d1R2BkBxA7DmCI5ZCuhmQffP5F6pY');
+    const sh = ss.getSheets().filter(function(x) { return x.getSheetId() === 1396352881; })[0];
+    if (!sh) return { ok: false, msg: 'Không tìm thấy sheet Tập Điểm' };
+    const lastRow = sh.getLastRow();
+    if (lastRow <= 1) return { ok: true, items: [] };
+    const values = sh.getRange(2, 1, lastRow - 1, 1).getValues().map(function(r) { return String(r[0] || '').trim(); }).filter(Boolean);
+    return { ok: true, items: values };
+  } catch(e) {
+    return serverError_(e);
+  }
+}
+
+function submitRecallPort_(token, searchBy, shd, tapDiem, port, cause, other, emailHint) {
+  const lock = LockService.getScriptLock();
+  let locked = false;
+  try {
+    const s = requireSession_(token, emailHint);
+    if (!s) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
+    const email = s.email;
+    const emp = s.emp;
+    if (!emp.profile.code) return { ok: false, msg: 'Tài khoản chưa có Mã NV trong danh sách.' };
+    if (!emp.profile.inside) return { ok: false, msg: 'Tài khoản chưa có Inside Account trong danh sách.' };
+
+    searchBy = String(searchBy || 'SHD').trim().toUpperCase();
+    let finalShd = '';
+    let finalTapDiem = '';
+    let finalPort = '';
+
+    if (searchBy === 'TAP_DIEM') {
+      finalTapDiem = String(tapDiem || '').trim().toUpperCase();
+      if (!finalTapDiem) return { ok: false, msg: 'Vui lòng chọn hoặc nhập Tập Điểm.' };
+
+      const p = parseInt(port, 10);
+      if (isNaN(p) || p < 1 || p > 16) {
+        return { ok: false, msg: 'Vui lòng chọn Port từ 1 đến 16.' };
+      }
+      finalPort = String(p);
+    } else {
+      finalShd = String(shd || '').trim().toUpperCase();
+      if (!/^[A-Z0-9][A-Z0-9._\-\/]{3,29}$/.test(finalShd)) {
+        return { ok: false, msg: 'SHD không hợp lệ (từ 4 đến 30 ký tự).' };
+      }
+    }
+
+    cause = String(cause || '').trim();
+    let cause1;
+    if (cause === RECALL_PORT.CAUSE_OTHER || cause === 'Khác' || cause.indexOf('Khác') === 0) {
+      other = String(other || cause.replace(/^Khác[:\s]*/i, '') || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!other || other.length < 1) return { ok: false, msg: 'Vui lòng điền rõ nội dung nguyên nhân khác.' };
+      if (other.length > RECALL_PORT.OTHER_MAX) return { ok: false, msg: 'Nội dung tối đa ' + RECALL_PORT.OTHER_MAX + ' ký tự.' };
+      cause1 = 'Khác: ' + other;
+    } else if (RECALL_PORT.CAUSE_OPTIONS.indexOf(cause) >= 0) {
+      cause1 = cause;
+    } else {
+      cause1 = cause || 'KH cũ dọn đi';
+    }
+
+    lock.waitLock(20000);
+    locked = true;
+
+    const sh = getRecallPortSheet_();
+    const lastCol = sh.getLastColumn();
+    const headers = sh.getRange(RECALL_PORT.HEADER_ROW, 1, 1, lastCol).getValues()[0].map(normHeader_);
+    const names = ['ID', 'Tác Vụ', 'Email', 'MSNV', 'Account Inside', 'SHD', 'Tập Điểm', 'Port', 'Nguyên Nhân 1', 'Ngày Cập Nhật', 'Kết Quả', 'Thao Tác'];
+    const c = {};
+    names.forEach(function (n) {
+      const i = headers.indexOf(normHeader_(n));
+      if (i < 0) throw new Error('Sheet Thu Hồi Port thiếu cột "' + n + '"');
+      c[n] = i;
+    });
+
+    const H = RECALL_PORT.HEADER_ROW;
+    const lastRow = sh.getLastRow();
+    let maxId = 0;
+    let lastDataRow = H;
+    if (lastRow > H) {
+      const n = lastRow - H;
+      const first = H + 1;
+      const ids = sh.getRange(first, c['ID'] + 1, n, 1).getValues();
+      for (let i = 0; i < n; i++) {
+        const v = parseInt(ids[i][0], 10);
+        if (!isNaN(v) && v > maxId) maxId = v;
+        if (ids[i][0] !== '') lastDataRow = first + i;
+      }
+    }
+
+    const newId = String(maxId + 1);
+    const newRow = lastDataRow + 1;
+    if (newRow > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), newRow - sh.getMaxRows());
+
+    const vals = {
+      'ID': newId,
+      'Tác Vụ': RECALL_PORT.TASK,
+      'Email': email,
+      'MSNV': emp.profile.code,
+      'Account Inside': emp.profile.inside,
+      'SHD': finalShd,
+      'Tập Điểm': finalTapDiem,
+      'Port': finalPort,
+      'Nguyên Nhân 1': cause1,
+      'Ngày Cập Nhật': new Date(),
+      'Kết Quả': RECALL_PORT.RESULT_NEW,
+      'Thao Tác': RECALL_PORT.STATUS_NEW
+    };
+    const TEXT_COLS = ['MSNV', 'SHD', 'Account Inside', 'Tập Điểm', 'Port', 'Nguyên Nhân 1'];
+    Object.keys(vals).forEach(function (n) {
+      const cell = sh.getRange(newRow, c[n] + 1);
+      if (TEXT_COLS.indexOf(n) >= 0) cell.setNumberFormat('@');
+      if (n === 'Ngày Cập Nhật') {
+        cell.setNumberFormat(BYPASS.DATE_FMT);
+        cell.setValue(vals[n]);
+      } else {
+        cell.setValue(vals[n]);
+      }
+    });
+    SpreadsheetApp.flush();
+
+    const displayShd = finalShd || (finalTapDiem + ' [Port ' + finalPort + ']');
+    return { ok: true, id: newId, shd: displayShd, task: RECALL_PORT.TASK };
+  } catch (e) {
+    console.error(e);
+    return { ok: false, msg: 'Lỗi hệ thống: ' + (e && e.message ? e.message : e) };
+  } finally {
+    if (locked) { try { lock.releaseLock(); } catch (x) {} }
+  }
+}
+
+function recallPortStatus_(token, id, emailHint) {
+  try {
+    const email = sessionEmailFast_(token, emailHint);
+    if (!email) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
+    id = String(id || '').trim();
+    if (!/^\d{1,12}$/.test(id)) return { ok: false, notFound: true, msg: 'Mã yêu cầu không hợp lệ.' };
+
+    const sh = getRecallPortSheet_();
+    const H = RECALL_PORT.HEADER_ROW;
+    const lastCol = sh.getLastColumn();
+    const headers = sh.getRange(H, 1, 1, lastCol).getValues()[0].map(normHeader_);
+    const cId = headers.indexOf(normHeader_('ID'));
+    const cMail = headers.indexOf(normHeader_('Email'));
+    const cSt = headers.indexOf(normHeader_('Thao Tác'));
+    const cRes = headers.indexOf(normHeader_('Kết Quả'));
+    if (cId < 0 || cMail < 0 || cSt < 0 || cRes < 0) throw new Error('Sheet thiếu cột ID / Email / Thao Tác / Kết Quả');
+
+    const lastRow = sh.getLastRow();
+    if (lastRow <= H) return { ok: false, notFound: true, msg: 'Không tìm thấy yêu cầu #' + id + '.' };
+    const hits = sh.getRange(H + 1, cId + 1, lastRow - H, 1).createTextFinder(id).matchEntireCell(true).findAll();
+    for (let i = 0; i < hits.length && i < 5; i++) {
+      const rv = sh.getRange(hits[i].getRow(), 1, 1, lastCol).getDisplayValues()[0];
+      if (normEmail_(rv[cMail]) === email) {
+        const thaoTac = String(rv[cSt] || '').normalize('NFC').trim();
+        const result = String(rv[cRes] || '').normalize('NFC').trim();
+        return { ok: true, status: result, note: isPendingStatus_(thaoTac) ? '' : thaoTac, pending: isPendingStatus_(result) };
+      }
+    }
+    return { ok: false, notFound: true, msg: 'Không tìm thấy yêu cầu #' + id + '.' };
   } catch (e) {
     return serverError_(e);
   }

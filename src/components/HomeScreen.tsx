@@ -569,16 +569,55 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [changingPass, setChangingPass] = useState<boolean>(false);
   const [avatarLoadError, setAvatarLoadError] = useState<boolean>(false);
 
-  // States cho Thu Hồi Port, OSP và Tra Cứu 360 (UI-only)
+  // States cho Thu Hồi Port
+  const [recallSearchBy, setRecallSearchBy] = useState<'SHD' | 'TAP_DIEM'>('SHD');
+  const [selectedTapDiem, setSelectedTapDiem] = useState<string>('');
+  const [selectedPort, setSelectedPort] = useState<number>(1);
+  const [tapDiemList, setTapDiemList] = useState<string[]>([]);
+  const [tapDiemSearch, setTapDiemSearch] = useState<string>('');
+  const [showTapDiemModal, setShowTapDiemModal] = useState<boolean>(false);
+  const [loadingTapDiem, setLoadingTapDiem] = useState<boolean>(false);
+
+  // States cho OSP và Tra Cứu 360 (UI-only)
   const [ospActionType, setOspActionType] = useState<string>('Điều chuyển OSP');
   const [search360Type, setSearch360Type] = useState<'Hợp đồng' | 'TSTC'>('Hợp đồng');
   const [search360Result, setSearch360Result] = useState<any>(null);
   const [searching360, setSearching360] = useState<boolean>(false);
 
-  // Tải danh sách nhân viên Active khi vào màn hình
+  // Tải danh sách Tập Điểm từ Sheet (có lưu cache)
+  const loadTapDiemList = useCallback(async () => {
+    try {
+      const cached = await AsyncStorage.getItem('@nextsu_tap_diem_list');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setTapDiemList(parsed);
+        }
+      }
+      setLoadingTapDiem(true);
+      const resp = await fetch(CONFIG.TAP_DIEM_CSV_URL);
+      const text = await resp.text();
+      const lines = text
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l && l !== 'Tập Điểm' && !l.startsWith('T?p'));
+      if (lines.length > 0) {
+        const unique = Array.from(new Set(lines));
+        setTapDiemList(unique);
+        await AsyncStorage.setItem('@nextsu_tap_diem_list', JSON.stringify(unique));
+      }
+    } catch (err) {
+      console.warn('Lỗi tải danh sách Tập Điểm:', err);
+    } finally {
+      setLoadingTapDiem(false);
+    }
+  }, []);
+
+  // Tải danh sách nhân viên Active và Tập Điểm khi vào màn hình
   useEffect(() => {
     fetchActiveStaffList().then((list) => setStaffList(list));
-  }, []);
+    loadTapDiemList();
+  }, [loadTapDiemList]);
 
   // Xử lý nút Back vật lý trên Android
   useEffect(() => {
@@ -630,6 +669,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     if (tab === 'SPAM') {
       setSelectedCause(CONFIG.OPTIMIZE_CAUSE_OPTIONS[0]);
       setOptimizeChannelType('POOL');
+    }
+    if (tab === 'RECALL_PORT') {
+      setSelectedCause(CONFIG.RECALL_PORT_CAUSE_OPTIONS[0]);
+      setRecallSearchBy('SHD');
+      setSelectedTapDiem('');
+      setSelectedPort(1);
+      if (tapDiemList.length === 0) loadTapDiemList();
     }
     if (tab === 'OSP') setOspActionType('Điều chuyển OSP');
     setActiveTab(tab);
@@ -733,12 +779,30 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   // Gửi yêu cầu nghiệp vụ
   const handleSubmitTask = async () => {
     const cleanShd = shd.trim().toUpperCase();
-    if (!/^[A-Z0-9][A-Z0-9._\-\/]{3,29}$/.test(cleanShd)) {
-      Alert.alert(
-        'SHD không hợp lệ',
-        'Vui lòng nhập Số Hợp Đồng (SHD) hợp lệ (từ 4 đến 30 ký tự chữ/số).'
-      );
-      return;
+    if (activeTab !== 'RECALL_PORT' || recallSearchBy === 'SHD') {
+      if (!/^[A-Z0-9][A-Z0-9._\-\/]{3,29}$/.test(cleanShd)) {
+        Alert.alert(
+          'SHD không hợp lệ',
+          'Vui lòng nhập Số Hợp Đồng (SHD) hợp lệ (từ 4 đến 30 ký tự chữ/số).'
+        );
+        return;
+      }
+    } else {
+      // Thu hồi Port theo Tập Điểm
+      if (!selectedTapDiem) {
+        Alert.alert(
+          'Chưa chọn Tập Điểm',
+          'Vui lòng chạm để tìm và chọn Tập Điểm cần thu hồi Port.'
+        );
+        return;
+      }
+      if (!selectedPort || selectedPort < 1 || selectedPort > 16) {
+        Alert.alert(
+          'Chưa chọn Port',
+          'Vui lòng chọn số Port từ 1 đến 16.'
+        );
+        return;
+      }
     }
 
     if (activeTab === 'MYBAE' && !attachedImageBase64) {
@@ -775,43 +839,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       }
     }
 
-    // Tác vụ Thu Hồi Port (UI-only)
-    if (activeTab === 'RECALL_PORT') {
-      const assignedId = String(Date.now()).slice(-4);
-      const now = new Date();
-      const dateStr = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
-      const timeStr = now.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
-
-      const newReq: TrackedRequest = {
-        id: assignedId,
-        taskType: 'RECALL_PORT',
-        taskName: 'Thu Hồi Port',
-        shd: cleanShd,
-        status: 'Đã gửi yêu cầu',
-        note: otherCauseText.trim() || undefined,
-        pending: false,
-        createdAt: `${timeStr} • ${dateStr}`,
-        dateStr,
-        timestamp: now.getTime(),
-      };
-      const updated = [newReq, ...historyRef.current];
-      setHistory(updated);
-      historyRef.current = updated;
-      try {
-        await AsyncStorage.setItem(storageKey, JSON.stringify(updated));
-      } catch {}
-
-      setShd('');
-      setOtherCauseText('');
-      // Tự động chuyển ngay lập tức sang tab "Yêu cầu"
-      setActiveTab('HOME');
-      setMainTab(1);
-      setCurrentPage(1);
-      setSuccessBanner({
-        id: assignedId,
-        shd: cleanShd,
-        task: 'Thu Hồi Port',
-      });
+    if (activeTab === 'RECALL_PORT' && selectedCause === 'Khác' && !otherCauseText.trim()) {
+      Alert.alert(
+        'Thiếu nội dung',
+        'Vui lòng điền rõ lý do nguyên nhân khác cho yêu cầu Thu Hồi Port.'
+      );
       return;
     }
 
@@ -934,6 +966,24 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           shd: cleanShd,
         };
         break;
+      case 'RECALL_PORT': {
+        taskLabel = 'Thu Hồi Port';
+        const finalCause =
+          selectedCause === 'Khác'
+            ? `Khác: ${otherCauseText.trim()}`
+            : selectedCause;
+        payload = {
+          ...payload,
+          action: 'recallPortSubmit',
+          searchBy: recallSearchBy,
+          shd: recallSearchBy === 'SHD' ? cleanShd : '',
+          tapDiem: recallSearchBy === 'TAP_DIEM' ? selectedTapDiem : '',
+          port: recallSearchBy === 'TAP_DIEM' ? selectedPort : '',
+          cause: finalCause,
+          other: otherCauseText.trim(),
+        };
+        break;
+      }
     }
 
     const res = await callAppsScriptJsonApi<any>(payload);
@@ -980,11 +1030,16 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       second: '2-digit',
     });
 
+    const displayIdentifier =
+      activeTab === 'RECALL_PORT' && recallSearchBy === 'TAP_DIEM'
+        ? `${selectedTapDiem} (P.${selectedPort})`
+        : cleanShd;
+
     const newReq: TrackedRequest = {
       id: assignedId,
       taskType: activeTab as any,
       taskName: taskLabel,
-      shd: cleanShd,
+      shd: displayIdentifier,
       status: res?.resumed ? 'Đang theo dõi tiếp' : 'Chưa cập nhật',
       pending: true,
       createdAt: `${timeStr} • ${dateStr}`,
@@ -998,6 +1053,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
     setShd('');
     setOtherCauseText('');
+    setSelectedTapDiem('');
+    setSelectedPort(1);
     setAttachedImageBase64(null);
     setAttachedImageUri(null);
 
@@ -1009,7 +1066,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     // Hiển thị banner thành công ở đầu tab "Yêu cầu"
     setSuccessBanner({
       id: assignedId,
-      shd: cleanShd,
+      shd: displayIdentifier,
       task: taskLabel,
     });
 
@@ -1309,36 +1366,141 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   {activeTab === 'SEARCH_360' && 'Tra Cứu 360 (TSTC / Hợp Đồng)'}
                 </Text>
 
-                {/* Ô nhập Số Hợp Đồng (SHD) / Port / TSTC */}
-                <Text style={styles.fieldLabel}>
-                  {activeTab === 'SEARCH_360'
-                    ? search360Type === 'TSTC'
-                      ? 'MÃ TSTC *'
-                      : 'SỐ HỢP ĐỒNG (SHD) *'
-                    : activeTab === 'RECALL_PORT'
-                    ? 'SỐ HỢP ĐỒNG / SỐ PORT *'
-                    : activeTab === 'OSP'
-                    ? 'MÃ OSP / SỐ HỢP ĐỒNG *'
-                    : 'SỐ HỢP ĐỒNG (SHD) *'}
-                </Text>
-                <TextInput
-                  style={styles.textInputField}
-                  placeholder={
-                    activeTab === 'SEARCH_360'
-                      ? search360Type === 'TSTC'
-                        ? 'Nhập mã TSTC...'
-                        : 'Nhập mã hợp đồng (VD: SGH123456)...'
-                      : activeTab === 'RECALL_PORT'
-                      ? 'Nhập mã HĐ hoặc số Port cần thu hồi...'
-                      : activeTab === 'OSP'
-                      ? 'Nhập mã OSP hoặc số HĐ...'
-                      : 'Nhập mã hợp đồng (VD: SGH123456)...'
-                  }
-                  placeholderTextColor="#94A3B8"
-                  autoCapitalize="characters"
-                  value={shd}
-                  onChangeText={setShd}
-                />
+                {/* Chọn phương thức cho Thu Hồi Port: SHD hoặc Tập Điểm */}
+                {activeTab === 'RECALL_PORT' && (
+                  <View style={{ marginBottom: 12 }}>
+                    <Text style={styles.fieldLabel}>TRA CỨU THU HỒI PORT THEO *</Text>
+                    <View style={styles.recallModeRow}>
+                      <TouchableOpacity
+                        style={[
+                          styles.recallModeBtn,
+                          recallSearchBy === 'SHD' && styles.recallModeBtnActive,
+                        ]}
+                        onPress={() => setRecallSearchBy('SHD')}
+                      >
+                        <Ionicons
+                          name={
+                            recallSearchBy === 'SHD'
+                              ? 'radio-button-on'
+                              : 'radio-button-off'
+                          }
+                          size={18}
+                          color={recallSearchBy === 'SHD' ? '#0072FF' : '#64748B'}
+                        />
+                        <Text
+                          style={[
+                            styles.recallModeBtnText,
+                            recallSearchBy === 'SHD' && styles.recallModeBtnTextActive,
+                          ]}
+                        >
+                          Số Hợp Đồng (SHD)
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[
+                          styles.recallModeBtn,
+                          recallSearchBy === 'TAP_DIEM' && styles.recallModeBtnActive,
+                        ]}
+                        onPress={() => setRecallSearchBy('TAP_DIEM')}
+                      >
+                        <Ionicons
+                          name={
+                            recallSearchBy === 'TAP_DIEM'
+                              ? 'radio-button-on'
+                              : 'radio-button-off'
+                          }
+                          size={18}
+                          color={recallSearchBy === 'TAP_DIEM' ? '#0072FF' : '#64748B'}
+                        />
+                        <Text
+                          style={[
+                            styles.recallModeBtnText,
+                            recallSearchBy === 'TAP_DIEM' && styles.recallModeBtnTextActive,
+                          ]}
+                        >
+                          Tập Điểm & Port
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+
+                {/* Ô nhập Số Hợp Đồng (SHD) / Port / TSTC - ẨN KHI THU HỒI THEO TẬP ĐIỂM */}
+                {!(activeTab === 'RECALL_PORT' && recallSearchBy === 'TAP_DIEM') && (
+                  <>
+                    <Text style={styles.fieldLabel}>
+                      {activeTab === 'SEARCH_360'
+                        ? search360Type === 'TSTC'
+                          ? 'MÃ TSTC *'
+                          : 'SỐ HỢP ĐỒNG (SHD) *'
+                        : activeTab === 'OSP'
+                        ? 'MÃ OSP / SỐ HỢP ĐỒNG *'
+                        : 'SỐ HỢP ĐỒNG (SHD) *'}
+                    </Text>
+                    <TextInput
+                      style={styles.textInputField}
+                      placeholder={
+                        activeTab === 'SEARCH_360'
+                          ? search360Type === 'TSTC'
+                            ? 'Nhập mã TSTC...'
+                            : 'Nhập mã hợp đồng (VD: SGH123456)...'
+                          : activeTab === 'OSP'
+                          ? 'Nhập mã OSP hoặc số HĐ...'
+                          : 'Nhập mã hợp đồng (VD: SGH123456)...'
+                      }
+                      placeholderTextColor="#94A3B8"
+                      autoCapitalize="characters"
+                      value={shd}
+                      onChangeText={(text) => setShd(text.toUpperCase())}
+                    />
+                  </>
+                )}
+
+                {/* Khi THU HỒI PORT theo Tập Điểm & Port */}
+                {activeTab === 'RECALL_PORT' && recallSearchBy === 'TAP_DIEM' && (
+                  <>
+                    <Text style={styles.fieldLabel}>TẬP ĐIỂM *</Text>
+                    <TouchableOpacity
+                      style={styles.tapDiemTrigger}
+                      onPress={() => setShowTapDiemModal(true)}
+                    >
+                      <Network size={20} color="#0072FF" />
+                      <Text
+                        style={[
+                          styles.tapDiemTriggerText,
+                          !selectedTapDiem && { color: '#94A3B8' },
+                        ]}
+                      >
+                        {selectedTapDiem || 'Chạm để tìm & chọn Tập Điểm...'}
+                      </Text>
+                      <Ionicons name="chevron-down" size={18} color="#64748B" />
+                    </TouchableOpacity>
+
+                    <Text style={styles.fieldLabel}>PORT (CHỌN TỪ 1 ĐẾN 16) *</Text>
+                    <View style={styles.portGrid}>
+                      {CONFIG.PORT_OPTIONS.map((p) => (
+                        <TouchableOpacity
+                          key={p}
+                          style={[
+                            styles.portBtn,
+                            selectedPort === p && styles.portBtnActive,
+                          ]}
+                          onPress={() => setSelectedPort(p)}
+                        >
+                          <Text
+                            style={[
+                              styles.portBtnText,
+                              selectedPort === p && styles.portBtnTextActive,
+                            ]}
+                          >
+                            {p}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </>
+                )}
 
                 {/* Lựa chọn cho BYPASS */}
                 {activeTab === 'BYPASS' && (
@@ -1526,26 +1688,29 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 {activeTab === 'SPAM' && (
                   <>
                     <Text style={styles.fieldLabel}>MỤC YÊU CẦU TỐI ƯU *</Text>
-                    <View style={styles.segmentRow}>
+                    <View style={styles.optimizeSegmentRow}>
                       {CONFIG.OPTIMIZE_TARGET_OPTIONS.map((opt) => (
                         <TouchableOpacity
                           key={opt.id}
                           style={[
-                            styles.segmentBtn,
-                            optimizeChannelType === opt.id && styles.segmentBtnActive,
+                            styles.optimizeSegmentBtn,
+                            optimizeChannelType === opt.id && styles.optimizeSegmentBtnActive,
                           ]}
                           onPress={() =>
                             setOptimizeChannelType(
                               opt.id as 'POOL' | 'BYPASS_IPNAT' | 'DEACTIVE_IP'
                             )
                           }
+                          activeOpacity={0.8}
                         >
                           <Text
                             style={[
-                              styles.segmentBtnText,
+                              styles.optimizeSegmentBtnText,
                               optimizeChannelType === opt.id &&
-                                styles.segmentBtnTextActive,
+                                styles.optimizeSegmentBtnTextActive,
                             ]}
+                            numberOfLines={1}
+                            adjustsFontSizeToFit
                           >
                             {opt.label}
                           </Text>
@@ -1612,17 +1777,46 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   </>
                 )}
 
-                {/* Lựa chọn cho THU HỒI PORT (Bình thường) */}
+                {/* Lựa chọn cho THU HỒI PORT */}
                 {activeTab === 'RECALL_PORT' && (
                   <>
-                    <Text style={styles.fieldLabel}>LÝ DO / GHI CHÚ THU HỒI PORT</Text>
-                    <TextInput
-                      style={styles.textInputField}
-                      placeholder="Nhập lý do thu hồi hoặc số Port chi tiết..."
-                      placeholderTextColor="#94A3B8"
-                      value={otherCauseText}
-                      onChangeText={setOtherCauseText}
-                    />
+                    <Text style={styles.fieldLabel}>CHỌN NGUYÊN NHÂN 1 *</Text>
+                    {CONFIG.RECALL_PORT_CAUSE_OPTIONS.map((opt) => (
+                      <TouchableOpacity
+                        key={opt}
+                        style={[
+                          styles.radioOption,
+                          selectedCause === opt && styles.radioOptionSelected,
+                        ]}
+                        onPress={() => setSelectedCause(opt)}
+                      >
+                        <Ionicons
+                          name={
+                            selectedCause === opt
+                              ? 'radio-button-on'
+                              : 'radio-button-off'
+                          }
+                          size={20}
+                          color={selectedCause === opt ? '#0072FF' : '#94A3B8'}
+                        />
+                        <Text style={styles.radioOptionText}>{opt}</Text>
+                      </TouchableOpacity>
+                    ))}
+
+                    {selectedCause === 'Khác' && (
+                      <>
+                        <Text style={styles.fieldLabel}>
+                          NỘI DUNG NGUYÊN NHÂN KHÁC (ĐIỀN RÕ) *
+                        </Text>
+                        <TextInput
+                          style={styles.textInputField}
+                          placeholder="Điền rõ lý do thu hồi port..."
+                          placeholderTextColor="#94A3B8"
+                          value={otherCauseText}
+                          onChangeText={setOtherCauseText}
+                        />
+                      </>
+                    )}
                   </>
                 )}
 
@@ -2276,6 +2470,83 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 </TouchableOpacity>
               ))}
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal tìm kiếm & chọn nhanh Tập Điểm cho Thu Hồi Port */}
+      <Modal visible={showTapDiemModal} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Network size={20} color="#0072FF" />
+                <Text style={styles.modalTitle}>Chọn Tập Điểm</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowTapDiemModal(false)}>
+                <Ionicons name="close" size={24} color="#0F172A" />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.tapDiemSearchRow}>
+              <Ionicons name="search" size={17} color="#64748B" style={{ marginRight: 6 }} />
+              <TextInput
+                style={styles.tapDiemSearchInput}
+                placeholder="Tìm nhanh mã Tập Điểm (VD: BDGP017)..."
+                placeholderTextColor="#94A3B8"
+                autoCapitalize="characters"
+                autoCorrect={false}
+                value={tapDiemSearch}
+                onChangeText={setTapDiemSearch}
+              />
+              {Boolean(tapDiemSearch) && (
+                <TouchableOpacity onPress={() => setTapDiemSearch('')}>
+                  <Ionicons name="close-circle" size={18} color="#94A3B8" />
+                </TouchableOpacity>
+              )}
+            </View>
+            {loadingTapDiem && tapDiemList.length === 0 ? (
+              <View style={{ padding: 25, alignItems: 'center' }}>
+                <ActivityIndicator size="small" color="#0072FF" />
+                <Text style={{ marginTop: 8, fontSize: 13, color: '#64748B' }}>
+                  Đang tải danh sách Tập Điểm từ Sheet...
+                </Text>
+              </View>
+            ) : (
+              <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
+                {tapDiemList
+                  .filter((td) =>
+                    tapDiemSearch.trim()
+                      ? td.toUpperCase().includes(tapDiemSearch.trim().toUpperCase())
+                      : true
+                  )
+                  .slice(0, 50)
+                  .map((td) => (
+                    <TouchableOpacity
+                      key={td}
+                      style={[
+                        styles.tapDiemItemRow,
+                        selectedTapDiem === td && styles.tapDiemItemRowActive,
+                      ]}
+                      onPress={() => {
+                        setSelectedTapDiem(td);
+                        setShowTapDiemModal(false);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.tapDiemItemText,
+                          selectedTapDiem === td && styles.tapDiemItemTextActive,
+                        ]}
+                      >
+                        {td}
+                      </Text>
+                      {selectedTapDiem === td && (
+                        <Ionicons name="checkmark-circle" size={18} color="#0072FF" />
+                      )}
+                    </TouchableOpacity>
+                  ))}
+              </ScrollView>
+            )}
           </View>
         </View>
       </Modal>
@@ -3337,6 +3608,170 @@ const styles = StyleSheet.create({
     color: '#DC2626',
     flex: 1,
     fontWeight: '500',
+  },
+  // Nút 3 mục yêu cầu Tối Ưu Kênh Truyền (đồng đều chiều cao, không lệch dòng)
+  optimizeSegmentRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginVertical: 8,
+  },
+  optimizeSegmentBtn: {
+    flex: 1,
+    height: 48,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+    borderRadius: 12,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+  },
+  optimizeSegmentBtnActive: {
+    backgroundColor: '#0066FF',
+    borderColor: '#0066FF',
+    shadowColor: '#0066FF',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  optimizeSegmentBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#475569',
+    textAlign: 'center',
+  },
+  optimizeSegmentBtnTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '800',
+  },
+
+  // Phương thức Tra Cứu Thu Hồi Port
+  recallModeRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 4,
+  },
+  recallModeBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    height: 46,
+    gap: 8,
+  },
+  recallModeBtnActive: {
+    borderColor: '#0072FF',
+    backgroundColor: '#EFF6FF',
+  },
+  recallModeBtnText: {
+    fontSize: 13,
+    color: '#475569',
+    fontWeight: '600',
+  },
+  recallModeBtnTextActive: {
+    color: '#0072FF',
+    fontWeight: '700',
+  },
+
+  // Chọn Tập Điểm & Port
+  tapDiemTrigger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    height: 48,
+    gap: 10,
+    marginBottom: 8,
+  },
+  tapDiemTriggerText: {
+    flex: 1,
+    fontSize: 14,
+    color: '#0F172A',
+    fontWeight: '600',
+  },
+  portGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  portBtn: {
+    width: '10.5%',
+    minWidth: 38,
+    height: 38,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    backgroundColor: '#F8FAFC',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  portBtnActive: {
+    backgroundColor: '#0066FF',
+    borderColor: '#0066FF',
+    shadowColor: '#0066FF',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  portBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#334155',
+  },
+  portBtnTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '800',
+  },
+
+  // Modal Tập Điểm
+  tapDiemSearchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    height: 44,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  tapDiemSearchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: '#0F172A',
+  },
+  tapDiemItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  tapDiemItemRowActive: {
+    backgroundColor: '#EFF6FF',
+    borderRadius: 10,
+  },
+  tapDiemItemText: {
+    fontSize: 14,
+    color: '#1E293B',
+    fontWeight: '600',
+  },
+  tapDiemItemTextActive: {
+    color: '#0072FF',
+    fontWeight: '800',
   },
   submitTaskBtn: {
     marginTop: 22,

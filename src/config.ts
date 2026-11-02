@@ -92,6 +92,16 @@ export const CONFIG = {
     'Khác',
   ],
 
+  // Cấu hình Tác vụ "Thu Hồi Port"
+  RECALL_PORT_SHEET_ID: '1Sw-qSbLzvVdcW4rj7ywEZBEzKI6w5M82EQeYJUpdx7M',
+  RECALL_PORT_SHEET_GID: 966043489,
+  TAP_DIEM_SHEET_ID: '17QLc9SlfpPPrR-d1R2BkBxA7DmCI5ZCuhmQffP5F6pY',
+  TAP_DIEM_SHEET_GID: 1396352881,
+  TAP_DIEM_CSV_URL:
+    'https://docs.google.com/spreadsheets/d/17QLc9SlfpPPrR-d1R2BkBxA7DmCI5ZCuhmQffP5F6pY/export?format=csv&gid=1396352881',
+  RECALL_PORT_CAUSE_OPTIONS: ['KH cũ dọn đi', 'HD cũ đã hủy', 'Khác'],
+  PORT_OPTIONS: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+
   // Bảng màu đồng bộ với Logo Caption Nextsu AI - FPT Telecom (Xanh Cyan -> Xanh Dương -> Tím Gradient)
   COLORS: {
     PRIMARY: '#0066FF',
