@@ -96,15 +96,22 @@ const MANUAL = {
   MAX_BATCH: 30
 };
 
-// Sheet nhận yêu cầu SpamPool Ưu Tiên
+// Sheet nhận yêu cầu Tối Ưu Kênh Truyền (SpamPool Ưu Tiên, Bypass IPNAT, Deactive IP 0.0.0.0)
 const SPAMPOOL = {
   SHEET_ID: '1Sw-qSbLzvVdcW4rj7ywEZBEzKI6w5M82EQeYJUpdx7M',
-  GID: 2070394876,
+  GID: 2070394876,               // SpamPool và Deactive IPV6 (Pool Ưu Tiên & Deactive IP 0.0.0.0)
+  GID_BYPASS_NAT: 1907537423,   // BYPASS NAT (Bỏ IP NAT)
   HEADER_ROW: 1,
   TASK: 'Spampool Ưu Tiên',
-  CAUSE_OPTIONS: ['Facebook/ Tiktok/ Youtube chậm', 'VPN công ty/ Camera chậm'],
+  TASK_BYPASS_NAT: 'Bỏ IP NAT',
+  TASK_DEACTIVE_IP: 'Deactive IP 0.0.0.0',
+  CAUSE_OPTIONS: [
+    'Facebook, youtube, tiktok load cham',
+    'KH yeu cau',
+    'PS5, vpn, web gov'
+  ],
   CAUSE_OTHER: 'Khác',
-  OTHER_MIN: 3,
+  OTHER_MIN: 1,
   OTHER_MAX: 200,
   STATUS_NEW: 'Chưa cập nhật',
   RESULT_NEW: 'Chưa cập nhật'
@@ -176,7 +183,7 @@ function handleJsonApi_(req) {
     case 'manualSubmit':     res = apiManualSubmit(req.token, req.items, req.email); break;
     case 'manualStatus':     res = apiManualStatus(req.token, req.id, req.email); break;
     case 'manualStatusMany': res = apiManualStatusMany(req.token, req.ids, req.email); break;
-    case 'spamSubmit':       res = apiSpamSubmit(req.token, req.shd, req.cause, req.other, req.email); break;
+    case 'spamSubmit':       res = apiSpamSubmit(req.token, req.shd, req.cause, req.other, req.email, req.targetType || req.spamType, req.taskName, req.gid); break;
     case 'spamStatus':       res = apiSpamStatus(req.token, req.id, req.email); break;
     case 'resetMacSubmit':   res = apiResetMacSubmit(req.token, req.shd, req.email); break;
     case 'resetMacStatus':   res = apiResetMacStatus(req.token, req.id, req.email); break;
@@ -1266,10 +1273,12 @@ function getSpamSheet_() {
   return sh;
 }
 
-function apiSpamSubmit(token, shd, cause, other, emailHint) { return submitSpam_(token, shd, cause, other, emailHint); }
+function apiSpamSubmit(token, shd, cause, other, emailHint, targetType, taskName, targetGid) {
+  return submitSpam_(token, shd, cause, other, emailHint, targetType, taskName, targetGid);
+}
 function apiSpamStatus(token, id, emailHint) { return spamStatus_(token, id, emailHint); }
 
-function submitSpam_(token, shd, cause, other, emailHint) {
+function submitSpam_(token, shd, cause, other, emailHint, targetType, taskName, targetGid) {
   const lock = LockService.getScriptLock();
   let locked = false;
   try {
@@ -1283,30 +1292,54 @@ function submitSpam_(token, shd, cause, other, emailHint) {
     shd = String(shd || '').trim().toUpperCase();
     if (!/^[A-Z0-9][A-Z0-9._\-\/]{3,29}$/.test(shd)) return { ok: false, msg: 'SHD không hợp lệ.' };
 
+    // Phân loại Tác Vụ và GID mục tiêu:
+    // 1. Pool Ưu Tiên -> GID 2070394876, Tác Vụ: 'Spampool Ưu Tiên'
+    // 2. Bypass IPNAT -> GID 1907537423, Tác Vụ: 'Bỏ IP NAT'
+    // 3. Deactive IP 0.0.0.0 -> GID 2070394876, Tác Vụ: 'Deactive IP 0.0.0.0'
+    let effectiveGid = SPAMPOOL.GID; // 2070394876
+    let effectiveTask = SPAMPOOL.TASK; // 'Spampool Ưu Tiên'
+
+    const t = String(targetType || taskName || '').trim();
+    if (t === 'BYPASS_IPNAT' || t === 'Bỏ IP NAT' || t === 'Bypass IPNAT' || Number(targetGid) === 1907537423) {
+      effectiveGid = SPAMPOOL.GID_BYPASS_NAT; // 1907537423
+      effectiveTask = SPAMPOOL.TASK_BYPASS_NAT; // 'Bỏ IP NAT'
+    } else if (t === 'DEACTIVE_IP' || t === 'Deactive IP 0.0.0.0') {
+      effectiveGid = SPAMPOOL.GID; // 2070394876
+      effectiveTask = SPAMPOOL.TASK_DEACTIVE_IP; // 'Deactive IP 0.0.0.0'
+    } else {
+      effectiveGid = SPAMPOOL.GID; // 2070394876
+      effectiveTask = SPAMPOOL.TASK; // 'Spampool Ưu Tiên'
+    }
+
     cause = String(cause || '').trim();
     let cause1;
-    if (cause === SPAMPOOL.CAUSE_OTHER) {
-      other = String(other || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
-      if (other.length < SPAMPOOL.OTHER_MIN) return { ok: false, msg: 'Vui lòng điền nội dung nguyên nhân khác.' };
+    if (cause === SPAMPOOL.CAUSE_OTHER || cause === 'Khác' || cause.indexOf('Khác') === 0) {
+      other = String(other || cause.replace(/^Khác[:\s]*/i, '') || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!other || other.length < 1) return { ok: false, msg: 'Vui lòng điền nội dung nguyên nhân khác.' };
       if (other.length > SPAMPOOL.OTHER_MAX) return { ok: false, msg: 'Nội dung tối đa ' + SPAMPOOL.OTHER_MAX + ' ký tự.' };
-      cause1 = SPAMPOOL.CAUSE_OTHER + ': ' + other;
-    } else if (SPAMPOOL.CAUSE_OPTIONS.indexOf(cause) >= 0) {
-      cause1 = cause;
+      // Kiểm tra không dấu
+      if (/[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]/.test(other)) {
+        return { ok: false, msg: 'Nguyên nhân khác phải nhập KHÔNG DẤU theo quy định!' };
+      }
+      cause1 = other;
     } else {
-      return { ok: false, msg: 'Nguyên nhân không hợp lệ.' };
+      cause1 = cause;
     }
 
     lock.waitLock(20000);
     locked = true;
 
-    const sh = getSpamSheet_();
+    const ss = SpreadsheetApp.openById(SPAMPOOL.SHEET_ID);
+    const sh = ss.getSheets().filter(function (s) { return s.getSheetId() === effectiveGid; })[0];
+    if (!sh) throw new Error('Không tìm thấy tab dữ liệu với GID=' + effectiveGid);
+
     const lastCol = sh.getLastColumn();
     const headers = sh.getRange(SPAMPOOL.HEADER_ROW, 1, 1, lastCol).getValues()[0].map(normHeader_);
     const names = ['ID', 'Tác Vụ', 'Email', 'MSNV', 'Account Inside', 'SHD', 'Nguyên Nhân 1', 'Ngày Cập Nhật', 'Kết Quả', 'Thao Tác'];
     const c = {};
     names.forEach(function (n) {
       const i = headers.indexOf(normHeader_(n));
-      if (i < 0) throw new Error('Sheet thiếu cột "' + n + '"');
+      if (i < 0) throw new Error('Sheet (GID=' + effectiveGid + ') thiếu cột "' + n + '"');
       c[n] = i;
     });
 
@@ -1328,7 +1361,7 @@ function submitSpam_(token, shd, cause, other, emailHint) {
         const rv = sh.getRange(hits[k].getRow(), 1, 1, lastCol).getDisplayValues()[0];
         if (isPendingStatus_(rv[c['Kết Quả']])) {
           if (normEmail_(rv[c['Email']]) === email) {
-            return { ok: true, resumed: true, id: String(rv[c['ID']]), shd: shd };
+            return { ok: true, resumed: true, id: String(rv[c['ID']]), shd: shd, task: effectiveTask };
           }
           return { ok: false, msg: 'SHD ' + shd + ' đã được gửi và đang chờ xử lý.' };
         }
@@ -1341,15 +1374,15 @@ function submitSpam_(token, shd, cause, other, emailHint) {
 
     const vals = {
       'ID': newId,
-      'Tác Vụ': SPAMPOOL.TASK,
+      'Tác Vụ': effectiveTask,
       'Email': email,
       'MSNV': emp.profile.code,
       'Account Inside': emp.profile.inside,
       'SHD': shd,
       'Nguyên Nhân 1': cause1,
       'Ngày Cập Nhật': new Date(),
-      'Kết Quả': SPAMPOOL.RESULT_NEW,
-      'Thao Tác': SPAMPOOL.STATUS_NEW
+      'Kết Quả': 'Chưa cập nhật',
+      'Thao Tác': 'Chưa cập nhật'
     };
     const TEXT_COLS = ['MSNV', 'SHD', 'Account Inside', 'Nguyên Nhân 1'];
     Object.keys(vals).forEach(function (n) {
@@ -1360,7 +1393,7 @@ function submitSpam_(token, shd, cause, other, emailHint) {
     });
     SpreadsheetApp.flush();
 
-    return { ok: true, id: newId, shd: shd };
+    return { ok: true, id: newId, shd: shd, task: effectiveTask };
   } catch (e) {
     console.error(e);
     return { ok: false, msg: 'Lỗi hệ thống: ' + (e && e.message ? e.message : e) };
@@ -1376,25 +1409,33 @@ function spamStatus_(token, id, emailHint) {
     id = String(id || '').trim();
     if (!/^\d{1,12}$/.test(id)) return { ok: false, notFound: true, msg: 'Mã yêu cầu không hợp lệ.' };
 
-    const sh = getSpamSheet_();
-    const H = SPAMPOOL.HEADER_ROW;
-    const lastCol = sh.getLastColumn();
-    const headers = sh.getRange(H, 1, 1, lastCol).getValues()[0].map(normHeader_);
-    const cId = headers.indexOf(normHeader_('ID'));
-    const cMail = headers.indexOf(normHeader_('Email'));
-    const cSt = headers.indexOf(normHeader_('Thao Tác'));
-    const cRes = headers.indexOf(normHeader_('Kết Quả'));
-    if (cId < 0 || cMail < 0 || cSt < 0 || cRes < 0) throw new Error('Sheet thiếu cột ID / Email / Thao Tác / Kết Quả');
+    const ss = SpreadsheetApp.openById(SPAMPOOL.SHEET_ID);
+    const gids = [SPAMPOOL.GID, SPAMPOOL.GID_BYPASS_NAT];
 
-    const lastRow = sh.getLastRow();
-    if (lastRow <= H) return { ok: false, notFound: true, msg: 'Không tìm thấy yêu cầu #' + id + '.' };
-    const hits = sh.getRange(H + 1, cId + 1, lastRow - H, 1).createTextFinder(id).matchEntireCell(true).findAll();
-    for (let i = 0; i < hits.length && i < 5; i++) {
-      const rv = sh.getRange(hits[i].getRow(), 1, 1, lastCol).getDisplayValues()[0];
-      if (normEmail_(rv[cMail]) === email) {
-        const thaoTac = String(rv[cSt] || '').normalize('NFC').trim();
-        const result = String(rv[cRes] || '').normalize('NFC').trim();
-        return { ok: true, status: result, note: isPendingStatus_(thaoTac) ? '' : thaoTac, pending: isPendingStatus_(result) };
+    for (let g = 0; g < gids.length; g++) {
+      const sh = ss.getSheets().filter(function (s) { return s.getSheetId() === gids[g]; })[0];
+      if (!sh) continue;
+
+      const H = SPAMPOOL.HEADER_ROW;
+      const lastCol = sh.getLastColumn();
+      const headers = sh.getRange(H, 1, 1, lastCol).getValues()[0].map(normHeader_);
+      const cId = headers.indexOf(normHeader_('ID'));
+      const cMail = headers.indexOf(normHeader_('Email'));
+      const cSt = headers.indexOf(normHeader_('Thao Tác'));
+      const cRes = headers.indexOf(normHeader_('Kết Quả'));
+      if (cId < 0 || cMail < 0 || cSt < 0 || cRes < 0) continue;
+
+      const lastRow = sh.getLastRow();
+      if (lastRow <= H) continue;
+
+      const hits = sh.getRange(H + 1, cId + 1, lastRow - H, 1).createTextFinder(id).matchEntireCell(true).findAll();
+      for (let i = 0; i < hits.length && i < 5; i++) {
+        const rv = sh.getRange(hits[i].getRow(), 1, 1, lastCol).getDisplayValues()[0];
+        if (normEmail_(rv[cMail]) === email) {
+          const thaoTac = String(rv[cSt] || '').normalize('NFC').trim();
+          const result = String(rv[cRes] || '').normalize('NFC').trim();
+          return { ok: true, status: result, note: isPendingStatus_(thaoTac) ? '' : thaoTac, pending: isPendingStatus_(result) };
+        }
       }
     }
     return { ok: false, notFound: true, msg: 'Không tìm thấy yêu cầu #' + id + '.' };

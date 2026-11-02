@@ -47,6 +47,12 @@ import { BottomNavigation } from 'react-native-paper';
 import { PortalWebView } from './PortalWebView';
 import { NetToolsView } from './NetToolsView';
 
+const hasVietnameseDiacritics = (str: string): boolean => {
+  return /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]/.test(
+    str
+  );
+};
+
 interface HomeScreenProps {
   token: string;
   profile: EmployeeProfile;
@@ -540,6 +546,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [shd, setShd] = useState<string>('');
   const [selectedCause, setSelectedCause] = useState<string>('');
   const [otherCauseText, setOtherCauseText] = useState<string>('');
+  const [optimizeChannelType, setOptimizeChannelType] = useState<
+    'POOL' | 'BYPASS_IPNAT' | 'DEACTIVE_IP'
+  >('POOL');
   const [attachedImageBase64, setAttachedImageBase64] = useState<string | null>(
     null
   );
@@ -618,7 +627,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     if (tab === 'BYPASS') setSelectedCause(CONFIG.BYPASS_CAUSE2_OPTIONS[0]);
     if (tab === 'CLEAR') setSelectedCause(CONFIG.CLEAR_CAUSE1_OPTIONS[0]);
     if (tab === 'MYBAE') setSelectedCause(CONFIG.MYBAE_CAUSE1_OPTIONS[0]);
-    if (tab === 'SPAM') setSelectedCause(CONFIG.SPAM_CAUSE_OPTIONS[0]);
+    if (tab === 'SPAM') {
+      setSelectedCause(CONFIG.OPTIMIZE_CAUSE_OPTIONS[0]);
+      setOptimizeChannelType('POOL');
+    }
     if (tab === 'OSP') setOspActionType('Điều chuyển OSP');
     setActiveTab(tab);
   };
@@ -745,16 +757,22 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       return;
     }
 
-    if (
-      activeTab === 'SPAM' &&
-      selectedCause === 'Khác' &&
-      otherCauseText.trim().length < 3
-    ) {
-      Alert.alert(
-        'Thiếu nội dung',
-        'Vui lòng nhập mô tả nguyên nhân khác (tối thiểu 3 ký tự).'
-      );
-      return;
+    if (activeTab === 'SPAM' && selectedCause === 'Khác') {
+      const trimmedOther = otherCauseText.trim();
+      if (trimmedOther.length < 1) {
+        Alert.alert(
+          'Thiếu nội dung',
+          'Vui lòng nhập mô tả nguyên nhân khác.'
+        );
+        return;
+      }
+      if (hasVietnameseDiacritics(trimmedOther)) {
+        Alert.alert(
+          'Lỗi định dạng nguyên nhân',
+          'Quy định hệ thống yêu cầu nhập nguyên nhân KHÔNG DẤU.\nVui lòng xóa dấu tiếng Việt và thử lại!'
+        );
+        return;
+      }
     }
 
     // Tác vụ Thu Hồi Port (UI-only)
@@ -887,16 +905,27 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           ],
         };
         break;
-      case 'SPAM':
-        taskLabel = 'SpamPool Ưu Tiên';
+      case 'SPAM': {
+        const targetOpt =
+          CONFIG.OPTIMIZE_TARGET_OPTIONS.find((o) => o.id === optimizeChannelType) ||
+          CONFIG.OPTIMIZE_TARGET_OPTIONS[0];
+        taskLabel = `Tối Ưu Kênh Truyền (${targetOpt.label})`;
+        const finalCause =
+          selectedCause === 'Khác'
+            ? `Khác: ${otherCauseText.trim()}`
+            : selectedCause;
         payload = {
           ...payload,
           action: 'spamSubmit',
           shd: cleanShd,
-          cause: selectedCause,
+          cause: finalCause,
           other: otherCauseText.trim(),
+          taskName: targetOpt.sheetTask,
+          targetType: optimizeChannelType,
+          gid: targetOpt.gid,
         };
         break;
+      }
       case 'RESETMAC':
         taskLabel = 'Reset MAC';
         payload = {
@@ -1169,7 +1198,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     <Text style={styles.taskCardTitle}>Phân Công Tay</Text>
                   </TouchableOpacity>
 
-                  {/* 4. SpamPool Ưu Tiên */}
+                  {/* 4. Tối Ưu Kênh Truyền */}
                   <TouchableOpacity
                     style={styles.taskCard}
                     activeOpacity={0.85}
@@ -1178,7 +1207,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     <View style={[styles.taskIconBox, { backgroundColor: '#FFE4E6' }]}>
                       <Rocket size={26} color="#E11D48" strokeWidth={2.2} />
                     </View>
-                    <Text style={styles.taskCardTitle}>SpamPool Ưu Tiên</Text>
+                    <Text style={styles.taskCardTitle}>Tối Ưu Kênh Truyền</Text>
+                    <Text style={styles.taskCardDesc}>
+                      Pool / Bypass IPNAT / Deactive IP
+                    </Text>
                   </TouchableOpacity>
 
                   {/* 5. Reset MAC */}
@@ -1270,7 +1302,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   {activeTab === 'CLEAR' && 'Yêu cầu Clear Cls có SR'}
                   {activeTab === 'MYBAE' && 'Yêu cầu Bypass NT Mỹ Bảo'}
                   {activeTab === 'MANUAL' && 'Yêu cầu Phân Công Tay'}
-                  {activeTab === 'SPAM' && 'Yêu cầu SpamPool Ưu Tiên'}
+                  {activeTab === 'SPAM' && 'Yêu cầu Tối Ưu Kênh Truyền'}
                   {activeTab === 'RESETMAC' && 'Yêu cầu Reset MAC'}
                   {activeTab === 'RECALL_PORT' && 'Yêu cầu Thu Hồi Port'}
                   {activeTab === 'OSP' && 'Tác vụ OSP (Quyền Admin)'}
@@ -1490,11 +1522,60 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   </>
                 )}
 
-                {/* Lựa chọn cho SPAMPOOL */}
+                {/* Lựa chọn cho TỐI ƯU KÊNH TRUYỀN */}
                 {activeTab === 'SPAM' && (
                   <>
+                    <Text style={styles.fieldLabel}>MỤC YÊU CẦU TỐI ƯU *</Text>
+                    <View style={styles.segmentRow}>
+                      {CONFIG.OPTIMIZE_TARGET_OPTIONS.map((opt) => (
+                        <TouchableOpacity
+                          key={opt.id}
+                          style={[
+                            styles.segmentBtn,
+                            optimizeChannelType === opt.id && styles.segmentBtnActive,
+                          ]}
+                          onPress={() =>
+                            setOptimizeChannelType(
+                              opt.id as 'POOL' | 'BYPASS_IPNAT' | 'DEACTIVE_IP'
+                            )
+                          }
+                        >
+                          <Text
+                            style={[
+                              styles.segmentBtnText,
+                              optimizeChannelType === opt.id &&
+                                styles.segmentBtnTextActive,
+                            ]}
+                          >
+                            {opt.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+
+                    {/* Hộp thông tin Tác Vụ Sheet tương ứng */}
+                    <View style={styles.targetSheetHintBox}>
+                      <Text style={styles.targetSheetHintText}>
+                        • Tác vụ Sheet:{' '}
+                        <Text style={styles.targetSheetHintBold}>
+                          {
+                            CONFIG.OPTIMIZE_TARGET_OPTIONS.find(
+                              (o) => o.id === optimizeChannelType
+                            )?.sheetTask
+                          }
+                        </Text>{' '}
+                        (GID:{' '}
+                        {
+                          CONFIG.OPTIMIZE_TARGET_OPTIONS.find(
+                            (o) => o.id === optimizeChannelType
+                          )?.gid
+                        }
+                        )
+                      </Text>
+                    </View>
+
                     <Text style={styles.fieldLabel}>CHỌN NGUYÊN NHÂN *</Text>
-                    {CONFIG.SPAM_CAUSE_OPTIONS.map((opt) => (
+                    {CONFIG.OPTIMIZE_CAUSE_OPTIONS.map((opt) => (
                       <TouchableOpacity
                         key={opt}
                         style={[
@@ -1519,15 +1600,34 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     {selectedCause === 'Khác' && (
                       <>
                         <Text style={styles.fieldLabel}>
-                          NỘI DUNG NGUYÊN NHÂN KHÁC (3 - 200 KÝ TỰ) *
+                          NỘI DUNG NGUYÊN NHÂN KHÁC (BẮT BUỘC KHÔNG DẤU) *
                         </Text>
                         <TextInput
-                          style={styles.textInputField}
-                          placeholder="Nhập chi tiết nguyên nhân..."
+                          style={[
+                            styles.textInputField,
+                            hasVietnameseDiacritics(otherCauseText) && {
+                              borderColor: '#EF4444',
+                              backgroundColor: '#FEF2F2',
+                            },
+                          ]}
+                          placeholder="Nhap nguyen nhan khong dau..."
                           placeholderTextColor="#94A3B8"
                           value={otherCauseText}
                           onChangeText={setOtherCauseText}
                         />
+                        {hasVietnameseDiacritics(otherCauseText) && (
+                          <View style={styles.diacriticWarningBox}>
+                            <Ionicons
+                              name="alert-circle"
+                              size={16}
+                              color="#DC2626"
+                              style={{ marginRight: 6 }}
+                            />
+                            <Text style={styles.diacriticWarningText}>
+                              Phát hiện ký tự có dấu! Vui lòng xóa dấu tiếng Việt (ví dụ: "mat ket noi", "load cham").
+                            </Text>
+                          </View>
+                        )}
                       </>
                     )}
                   </>
@@ -3223,6 +3323,41 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#0369A1',
     fontWeight: '600',
+  },
+  targetSheetHintBox: {
+    backgroundColor: '#F0F9FF',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginTop: 8,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+  },
+  targetSheetHintText: {
+    fontSize: 13,
+    color: '#0369A1',
+  },
+  targetSheetHintBold: {
+    fontWeight: '700',
+    color: '#0284C7',
+  },
+  diacriticWarningBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF2F2',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  diacriticWarningText: {
+    fontSize: 12,
+    color: '#DC2626',
+    flex: 1,
+    fontWeight: '500',
   },
   submitTaskBtn: {
     marginTop: 22,

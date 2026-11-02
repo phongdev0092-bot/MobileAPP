@@ -53,9 +53,42 @@ export const CONFIG = {
     'Điện thoại KTV không hỗ trợ đo kiểm',
   ],
   MANUAL_TYPE_OPTIONS: ['TRIỂN KHAI', 'BẢO TRÌ'],
+
+  // Cấu hình Tác vụ "Tối Ưu Kênh Truyền" (thay thế SpamPool Ưu Tiên)
+  OPTIMIZE_CHANNEL_SHEET_ID: '1Sw-qSbLzvVdcW4rj7ywEZBEzKI6w5M82EQeYJUpdx7M',
+  OPTIMIZE_TARGET_OPTIONS: [
+    {
+      id: 'POOL',
+      label: 'Pool Ưu Tiên',
+      sheetTask: 'Spampool Ưu Tiên',
+      gid: 2070394876,
+      desc: 'Đẩy lên Sheet là: Spampool Ưu Tiên',
+    },
+    {
+      id: 'BYPASS_IPNAT',
+      label: 'Bypass IPNAT',
+      sheetTask: 'Bỏ IP NAT',
+      gid: 1907537423,
+      desc: 'Đẩy lên Sheet là: Bỏ IP NAT',
+    },
+    {
+      id: 'DEACTIVE_IP',
+      label: 'Deactive IP 0.0.0.0',
+      sheetTask: 'Deactive IP 0.0.0.0',
+      gid: 2070394876,
+      desc: 'Đẩy lên Sheet là: Deactive IP 0.0.0.0',
+    },
+  ],
+  OPTIMIZE_CAUSE_OPTIONS: [
+    'Facebook, youtube, tiktok load cham',
+    'KH yeu cau',
+    'PS5, vpn, web gov',
+    'Khác',
+  ],
   SPAM_CAUSE_OPTIONS: [
-    'Facebook/ Tiktok/ Youtube chậm',
-    'VPN công ty/ Camera chậm',
+    'Facebook, youtube, tiktok load cham',
+    'KH yeu cau',
+    'PS5, vpn, web gov',
     'Khác',
   ],
 
