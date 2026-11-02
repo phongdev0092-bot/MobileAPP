@@ -46,6 +46,12 @@ import { UserProfileView } from './UserProfileView';
 import { BottomNavigation } from 'react-native-paper';
 import { PortalWebView } from './PortalWebView';
 import { NetToolsView } from './NetToolsView';
+import { FestiveHeaderOverlay } from './FestiveHeaderOverlay';
+import {
+  fetchHeaderTheme,
+  getAutoFestivalTheme,
+  HeaderThemeConfig,
+} from '../services/headerThemeService';
 
 const hasVietnameseDiacritics = (str: string): boolean => {
   return /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]/.test(
@@ -613,11 +619,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     }
   }, []);
 
-  // Tải danh sách nhân viên Active và Tập Điểm khi vào màn hình
+  // Chủ đề Lễ hội Header (API + Lịch tự động trong năm)
+  const [headerTheme, setHeaderTheme] = useState<HeaderThemeConfig>(getAutoFestivalTheme());
+
+  // Tải danh sách nhân viên Active, Tập Điểm và Chủ đề Header khi vào màn hình
   useEffect(() => {
     fetchActiveStaffList().then((list) => setStaffList(list));
     loadTapDiemList();
-  }, [loadTapDiemList]);
+    fetchHeaderTheme(token).then((t) => setHeaderTheme(t));
+  }, [loadTapDiemList, token]);
 
   // Xử lý nút Back vật lý trên Android
   useEffect(() => {
@@ -1121,13 +1131,25 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
   return (
     <View style={styles.container}>
-      {/* Thanh Header Gradient mang thương hiệu Nextsu AI */}
+      {/* Thanh Header Gradient mang thương hiệu Nextsu AI & Lễ hội */}
       <LinearGradient
-        colors={['#070F26', '#0D235A', '#1E1B5E']}
+        colors={headerTheme.gradientColors}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={styles.headerGradient}
       >
+        {/* Ảnh nền lễ hội (nếu có cấu hình từ API) */}
+        {Boolean(headerTheme.backgroundImage) && (
+          <Image
+            source={{ uri: headerTheme.backgroundImage! }}
+            style={[StyleSheet.absoluteFillObject, { opacity: 0.3 }]}
+            resizeMode="cover"
+          />
+        )}
+
+        {/* Hiệu ứng hoa rơi / tuyết rơi / pháo hoa theo lễ hội trong năm */}
+        <FestiveHeaderOverlay particleType={headerTheme.particleType} count={16} />
+
         <View style={styles.headerTopRow}>
           <View style={styles.headerBrandRow}>
             <View style={styles.miniLogoBadge}>
@@ -1142,6 +1164,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               <Text style={styles.headerAppSub}>FPT TELECOM PORTAL</Text>
             </View>
           </View>
+
+          {/* Huy hiệu lễ hội nếu có */}
+          {Boolean(headerTheme.greetingBadge) && (
+            <View style={styles.festiveBadge}>
+              <Text style={styles.festiveBadgeText}>{headerTheme.greetingBadge}</Text>
+            </View>
+          )}
         </View>
 
         {/* Thẻ chào mừng hiển thị Ảnh nhân viên (cột V) và "Xin chào, Họ và tên Nhân viên" (cột E) */}
@@ -1294,34 +1323,45 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     <Text style={styles.taskCardTitle}>Thu Hồi Port</Text>
                   </TouchableOpacity>
 
-                  {/* 7. OSP (Quyền Admin có logo Admin nhỏ góc trên card) */}
-                  <TouchableOpacity
-                    style={styles.taskCard}
-                    activeOpacity={0.85}
-                    onPress={() => openTaskTab('OSP')}
-                  >
-                    <View style={styles.adminCardBadge}>
-                      <ShieldCheck size={11} color="#FFFFFF" strokeWidth={2.5} />
-                      <Text style={styles.adminCardBadgeText}>Admin</Text>
-                    </View>
-                    <View style={[styles.taskIconBox, { backgroundColor: '#FEE2E2' }]}>
-                      <Cpu size={26} color="#DC2626" strokeWidth={2.2} />
-                    </View>
-                    <Text style={styles.taskCardTitle}>OSP</Text>
-                  </TouchableOpacity>
+                  {/* 7. OSP (Chỉ hiển thị với Quyền Admin, User thường ẩn đi) */}
+                  {profile.role === 'Admin' && (
+                    <TouchableOpacity
+                      style={styles.taskCard}
+                      activeOpacity={0.85}
+                      onPress={() => openTaskTab('OSP')}
+                    >
+                      <View style={styles.adminCardBadge}>
+                        <ShieldCheck size={11} color="#FFFFFF" strokeWidth={2.5} />
+                        <Text style={styles.adminCardBadgeText}>Admin</Text>
+                      </View>
+                      <View style={[styles.taskIconBox, { backgroundColor: '#FEE2E2' }]}>
+                        <Cpu size={26} color="#DC2626" strokeWidth={2.2} />
+                      </View>
+                      <Text style={styles.taskCardTitle}>OSP</Text>
+                      <Text style={styles.taskCardDesc}>Dành riêng Admin</Text>
+                    </TouchableOpacity>
+                  )}
 
-                  {/* 8. Tra Cứu 360 */}
+                  {/* 8. Tra Cứu 360 (Đang phát triển) */}
                   <TouchableOpacity
                     style={styles.taskCard}
                     activeOpacity={0.85}
-                    onPress={() => openTaskTab('SEARCH_360')}
+                    onPress={() => {
+                      Alert.alert(
+                        'Tính năng đang phát triển',
+                        'Chức năng Tra Cứu 360 (TSTC / Hợp đồng) đang được hoàn thiện và sẽ sớm ra mắt trong bản cập nhật tới!'
+                      );
+                    }}
                   >
+                    <View style={styles.devBadge}>
+                      <Text style={styles.devBadgeText}>Đang phát triển</Text>
+                    </View>
                     <View style={[styles.taskIconBox, { backgroundColor: '#CCFBF1' }]}>
                       <Search size={26} color="#0F766E" strokeWidth={2.2} />
                     </View>
                     <Text style={styles.taskCardTitle}>Tra Cứu 360</Text>
-                    <Text style={styles.taskCardDesc}>
-                      TSTC / Hợp đồng
+                    <Text style={[styles.taskCardDesc, { color: '#D97706', fontWeight: '700' }]}>
+                      Đang phát triển
                     </Text>
                   </TouchableOpacity>
 
@@ -3772,6 +3812,36 @@ const styles = StyleSheet.create({
   tapDiemItemTextActive: {
     color: '#0072FF',
     fontWeight: '800',
+  },
+  devBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FCD34D',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    zIndex: 2,
+  },
+  devBadgeText: {
+    color: '#B45309',
+    fontSize: 9.5,
+    fontWeight: '800',
+  },
+  festiveBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.35)',
+  },
+  festiveBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 11.5,
+    fontWeight: '700',
   },
   submitTaskBtn: {
     marginTop: 22,

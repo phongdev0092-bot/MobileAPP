@@ -204,6 +204,8 @@ function handleJsonApi_(req) {
     case 'recallPortSubmit': res = apiRecallPortSubmit(req.token, req.searchBy, req.shd, req.tapDiem, req.port, req.cause, req.other, req.email); break;
     case 'recallPortStatus': res = apiRecallPortStatus(req.token, req.id, req.email); break;
     case 'getTapDiemList':   res = apiGetTapDiemList(req.token); break;
+    case 'getHeaderTheme':   res = apiGetHeaderTheme(); break;
+    case 'setHeaderTheme':   res = apiSetHeaderTheme(req.token, req.theme); break;
     case 'adminList':        res = apiAdminList(req.token); break;
     case 'adminSave':        res = apiAdminSave(req.token, req.data); break;
     case 'adminDelete':      res = apiAdminDelete(req.token, req.id); break;
@@ -2088,5 +2090,99 @@ function dangKyNgayOff(email, thang, nam, day, value) {
     };
   } finally {
     lock.releaseLock();
+  }
+}
+
+/* ===================== Bộ API Quản Lý Giao Diện Lễ Hội / Header Theme ===================== */
+
+function apiGetHeaderTheme() {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const custom = props.getProperty('HEADER_THEME');
+    if (custom) {
+      return { ok: true, theme: JSON.parse(custom) };
+    }
+
+    const now = new Date();
+    const month = now.getMonth() + 1;
+    const day = now.getDate();
+
+    let autoTheme = {
+      festivalId: 'default',
+      festivalName: 'NextSu AI',
+      gradientColors: ['#070F26', '#0D235A', '#1E1B5E'],
+      backgroundImage: null,
+      particleType: 'stars',
+      greetingBadge: null
+    };
+
+    if (month === 12 && day >= 15 && day <= 26) {
+      autoTheme = {
+        festivalId: 'noel',
+        festivalName: 'Giáng Sinh An Lành',
+        gradientColors: ['#064E3B', '#047857', '#0F766E'],
+        backgroundImage: null,
+        particleType: 'snow',
+        greetingBadge: '🎄 Merry Christmas'
+      };
+    } else if ((month === 12 && day >= 30) || (month === 1 && day <= 5)) {
+      autoTheme = {
+        festivalId: 'new_year',
+        festivalName: 'Chào Năm Mới',
+        gradientColors: ['#312E81', '#4F46E5', '#7C3AED'],
+        backgroundImage: null,
+        particleType: 'confetti',
+        greetingBadge: '🎆 Happy New Year'
+      };
+    } else if ((month === 1 && day >= 15) || (month === 2 && day <= 25)) {
+      autoTheme = {
+        festivalId: 'tet',
+        festivalName: 'Mừng Xuân & Tết Cổ Truyền',
+        gradientColors: ['#7F1D1D', '#991B1B', '#D97706'],
+        backgroundImage: null,
+        particleType: 'apricot',
+        greetingBadge: '🧧 Chúc Mừng Năm Mới'
+      };
+    } else if (month === 9 && day >= 10 && day <= 16) {
+      autoTheme = {
+        festivalId: 'fpt_day',
+        festivalName: 'Mừng Sinh Nhật FPT',
+        gradientColors: ['#1E3A8A', '#0284C7', '#EA580C'],
+        backgroundImage: null,
+        particleType: 'confetti',
+        greetingBadge: '🧡 Sinh Nhật FPT'
+      };
+    } else if (month === 9 && day >= 1 && day <= 3) {
+      autoTheme = {
+        festivalId: 'quoc_khanh',
+        festivalName: 'Mừng Quốc Khánh 2/9',
+        gradientColors: ['#991B1B', '#B91C1C', '#DC2626'],
+        backgroundImage: null,
+        particleType: 'confetti',
+        greetingBadge: '🇻🇳 Tự Hào Việt Nam'
+      };
+    }
+
+    return { ok: true, theme: autoTheme };
+  } catch (e) {
+    return { ok: false, msg: String(e && e.message ? e.message : e) };
+  }
+}
+
+function apiSetHeaderTheme(token, themeObj) {
+  try {
+    const s = requireSession_(token);
+    if (!s) return { ok: false, expired: true, msg: 'Phiên hết hạn.' };
+    if (s.emp.profile.role !== 'Admin') return { ok: false, msg: 'Chỉ Admin mới có quyền đổi theme giao diện.' };
+
+    const props = PropertiesService.getScriptProperties();
+    if (!themeObj || themeObj.reset) {
+      props.deleteProperty('HEADER_THEME');
+      return { ok: true, msg: 'Đã khôi phục giao diện mặc định.' };
+    }
+    props.setProperty('HEADER_THEME', JSON.stringify(themeObj));
+    return { ok: true, msg: 'Cập nhật chủ đề giao diện thành công!', theme: themeObj };
+  } catch (e) {
+    return { ok: false, msg: String(e && e.message ? e.message : e) };
   }
 }
