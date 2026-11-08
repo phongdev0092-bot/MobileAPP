@@ -1041,3 +1041,117 @@ export async function submitScheduleRegistration(
   };
 }
 
+/* ===================== QUẢN TRỊ USER (ADMIN USER MANAGEMENT) ===================== */
+
+export interface AdminUserItem {
+  row: number;
+  email: string;
+  name: string;
+  code: string;
+  title: string;
+  partner: string;
+  block: string;
+  phone: string;
+  inside: string;
+  role: 'Admin' | 'User';
+  hasPassword: boolean;
+  storedPass?: string;
+  isDefaultAdmin?: boolean;
+}
+
+export async function fetchAdminUserList(token: string): Promise<AdminUserItem[]> {
+  try {
+    // 1. Thử gọi API adminList từ Apps Script
+    const res = await callAppsScriptJsonApi<{ ok: boolean; list?: AdminUserItem[]; msg?: string }>({
+      action: 'adminList',
+      token,
+    });
+    if (res && res.ok && Array.isArray(res.list)) {
+      return res.list;
+    }
+  } catch {}
+
+  // 2. Dự phòng: Đọc trực tiếp từ Sheet nhân sự
+  try {
+    const rows = await fetchEmployeeSheetRows();
+    const list: AdminUserItem[] = [];
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i];
+      const email = String(r[10] || '').trim().toLowerCase();
+      if (!email) continue;
+      const storedPass = String(r[7] || '').trim();
+      const rawRole = String(r[29] || '').trim();
+      const role = resolveEmployeeRole(email, rawRole);
+      const isDefault = email === CONFIG.DEFAULT_ADMIN_EMAIL;
+
+      list.push({
+        row: i + 1,
+        email,
+        name: String(r[4] || '').trim(),
+        code: String(r[5] || '').trim(),
+        title: String(r[14] || '').trim(),
+        partner: String(r[2] || '').trim(),
+        block: String(r[3] || '').trim(),
+        phone: String(r[11] || '').trim(),
+        inside: String(r[6] || '').trim(),
+        role,
+        hasPassword: storedPass.length > 0,
+        storedPass,
+        isDefaultAdmin: isDefault,
+      });
+    }
+    return list;
+  } catch (err) {
+    console.warn('Lỗi tải danh sách user quản trị:', err);
+    return [];
+  }
+}
+
+export async function saveAdminUser(
+  token: string,
+  data: {
+    row?: number;
+    email: string;
+    name?: string;
+    code?: string;
+    title?: string;
+    partner?: string;
+    block?: string;
+    phone?: string;
+    inside?: string;
+    role?: 'Admin' | 'User';
+    password?: string;
+  }
+): Promise<{ ok: boolean; msg: string; row?: number }> {
+  try {
+    const res = await callAppsScriptJsonApi<{ ok: boolean; msg: string; row?: number }>({
+      action: 'adminSave',
+      token,
+      data,
+    });
+    if (res) return res;
+    return { ok: false, msg: 'Không nhận được phản hồi từ hệ thống.' };
+  } catch (err: any) {
+    return { ok: false, msg: err?.message || 'Lỗi gửi yêu cầu lưu thông tin nhân sự.' };
+  }
+}
+
+export async function deleteAdminUser(
+  token: string,
+  email: string,
+  row?: number
+): Promise<{ ok: boolean; msg: string }> {
+  try {
+    const res = await callAppsScriptJsonApi<{ ok: boolean; msg: string }>({
+      action: 'adminDelete',
+      token,
+      id: email,
+      row,
+    });
+    if (res) return res;
+    return { ok: false, msg: 'Không nhận được phản hồi từ hệ thống.' };
+  } catch (err: any) {
+    return { ok: false, msg: err?.message || 'Lỗi gửi yêu cầu xóa nhân sự.' };
+  }
+}
+

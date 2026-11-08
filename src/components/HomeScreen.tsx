@@ -30,6 +30,12 @@ import {
   FileCheck,
   Calendar,
   User,
+  CheckCircle2,
+  Pencil,
+  Trash2,
+  Eye,
+  EyeOff,
+  Plus,
 } from './AppIcon';
 import * as ImagePicker from 'expo-image-picker';
 import { CONFIG } from '../config';
@@ -40,12 +46,17 @@ import {
   EmployeeProfile,
   fetchActiveStaffList,
   StaffOption,
+  AdminUserItem,
+  fetchAdminUserList,
+  saveAdminUser,
+  deleteAdminUser,
 } from '../services/sheetAuthService';
 import { ScheduleView } from './ScheduleView';
 import { UserProfileView } from './UserProfileView';
 import { BottomNavigation } from 'react-native-paper';
 import { PortalWebView } from './PortalWebView';
 import { NetToolsView } from './NetToolsView';
+import { AdminHubView } from './AdminHubView';
 import { FestiveHeaderOverlay } from './FestiveHeaderOverlay';
 import {
   fetchHeaderTheme,
@@ -76,6 +87,8 @@ type ActiveTab =
   | 'SPAM'
   | 'RESETMAC'
   | 'RECALL_PORT'
+  | 'COMPLETE_CASE'
+  | 'ADMIN_HUB'
   | 'OSP'
   | 'SEARCH_360'
   | 'WEBVIEW'
@@ -83,7 +96,18 @@ type ActiveTab =
 
 export interface TrackedRequest {
   id: string;
-  taskType: 'BYPASS' | 'CLEAR' | 'MYBAE' | 'MANUAL' | 'SPAM' | 'RESETMAC' | 'RECALL_PORT' | 'OSP' | 'SEARCH_360';
+  taskType:
+    | 'BYPASS'
+    | 'CLEAR'
+    | 'MYBAE'
+    | 'MANUAL'
+    | 'SPAM'
+    | 'RESETMAC'
+    | 'RECALL_PORT'
+    | 'COMPLETE_CASE'
+    | 'ADMIN_HUB'
+    | 'OSP'
+    | 'SEARCH_360';
   taskName: string;
   shd: string;
   status: string;
@@ -245,6 +269,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         return 'resetMacStatus';
       case 'RECALL_PORT':
         return 'recallPortStatus';
+      case 'COMPLETE_CASE':
+        return 'completeCaseStatus';
       case 'OSP':
         return 'ospStatus';
       case 'SEARCH_360':
@@ -590,6 +616,33 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [search360Result, setSearch360Result] = useState<any>(null);
   const [searching360, setSearching360] = useState<boolean>(false);
 
+  // States cho Hoàn Tất Ca Vụ
+  const [completeCaseCardType, setCompleteCaseCardType] = useState<'TRIEN_KHAI' | 'XAC_MINH'>('TRIEN_KHAI');
+
+  // States cho Quản Trị Hệ Thống (ADMIN HUB)
+  const [adminUsers, setAdminUsers] = useState<AdminUserItem[]>([]);
+  const [loadingAdminUsers, setLoadingAdminUsers] = useState<boolean>(false);
+
+  const loadAdminUsers = useCallback(async () => {
+    setLoadingAdminUsers(true);
+    try {
+      const list = await fetchAdminUserList(token);
+      setAdminUsers(list);
+    } catch (err) {
+      console.warn('Lỗi tải danh sách admin user:', err);
+    } finally {
+      setLoadingAdminUsers(false);
+    }
+  }, [token]);
+
+  const handleAdminSaveUser = async (userData: any) => {
+    return await saveAdminUser(token, userData);
+  };
+
+  const handleAdminDeleteUser = async (email: string, row?: number) => {
+    return await deleteAdminUser(token, email, row);
+  };
+
   // Tải danh sách Tập Điểm từ Sheet (có lưu cache)
   const loadTapDiemList = useCallback(async () => {
     try {
@@ -660,11 +713,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
   // Chọn tab tác vụ và khởi tạo giá trị mặc định
   const openTaskTab = (tab: ActiveTab) => {
-    // Chỉ riêng tác vụ OSP yêu cầu quyền Admin
-    if (tab === 'OSP' && profile.role !== 'Admin') {
+    // Chỉ riêng tác vụ OSP và Quản Trị yêu cầu quyền Admin
+    if ((tab === 'OSP' || tab === 'ADMIN_HUB') && profile.role !== 'Admin') {
       Alert.alert(
         'Quyền truy cập Admin',
-        'Tác vụ "OSP" chỉ dành riêng cho tài khoản có quyền Quản trị viên (Admin).'
+        'Tác vụ quản trị chỉ dành riêng cho tài khoản có quyền Quản trị viên (Admin).'
       );
       return;
     }
@@ -686,6 +739,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       setSelectedTapDiem('');
       setSelectedPort(1);
       if (tapDiemList.length === 0) loadTapDiemList();
+    }
+    if (tab === 'COMPLETE_CASE') {
+      setCompleteCaseCardType('TRIEN_KHAI');
+      setSelectedCause(CONFIG.COMPLETE_CASE_CAUSE_TRIEN_KHAI[0]);
+    }
+    if (tab === 'ADMIN_HUB') {
+      loadAdminUsers();
     }
     if (tab === 'OSP') setOspActionType('Điều chuyển OSP');
     setActiveTab(tab);
@@ -786,6 +846,105 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     } catch {}
   };
 
+  // Thực hiện tác vụ OSP từ Trung tâm Quản trị
+  const handleSubmitOspFromHub = async () => {
+    const cleanShd = shd.trim().toUpperCase();
+    if (!/^[A-Z0-9][A-Z0-9._\-\/]{3,29}$/.test(cleanShd)) {
+      Alert.alert('SHD không hợp lệ', 'Vui lòng nhập Mã OSP hoặc Số Hợp Đồng hợp lệ (4-30 ký tự).');
+      return;
+    }
+    const assignedId = String(Date.now()).slice(-4);
+    const now = new Date();
+    const dateStr = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
+    const timeStr = now.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+
+    const newReq: TrackedRequest = {
+      id: assignedId,
+      taskType: 'OSP',
+      taskName: `OSP (${ospActionType})`,
+      shd: cleanShd,
+      status: 'Đã duyệt (Admin)',
+      note: otherCauseText.trim() || undefined,
+      pending: false,
+      createdAt: `${timeStr} • ${dateStr}`,
+      dateStr,
+      timestamp: now.getTime(),
+    };
+    const updated = [newReq, ...historyRef.current];
+    setHistory(updated);
+    historyRef.current = updated;
+    try {
+      await AsyncStorage.setItem(storageKey, JSON.stringify(updated));
+    } catch {}
+
+    setShd('');
+    setOtherCauseText('');
+    setActiveTab('HOME');
+    setMainTab(1);
+    setCurrentPage(1);
+    setSuccessBanner({
+      id: assignedId,
+      shd: cleanShd,
+      task: `OSP (${ospActionType})`,
+    });
+  };
+
+  // Thực hiện Clear Cls có SR từ Trung tâm Quản trị
+  const handleSubmitClearClsFromHub = async () => {
+    const cleanShd = shd.trim().toUpperCase();
+    if (!/^[A-Z0-9][A-Z0-9._\-\/]{3,29}$/.test(cleanShd)) {
+      Alert.alert('SHD không hợp lệ', 'Vui lòng nhập Số Hợp Đồng hợp lệ (4-30 ký tự).');
+      return;
+    }
+    setSubmitting(true);
+    const payload = {
+      token,
+      email: profile.email,
+      action: 'clearSubmit',
+      shd: cleanShd,
+      cause1: selectedCause || CONFIG.CLEAR_CAUSE1_OPTIONS[0],
+    };
+    const res = await callAppsScriptJsonApi<any>(payload);
+    setSubmitting(false);
+    if (!res || res.ok === false) {
+      Alert.alert('Lỗi gửi Clear Cls', res?.msg || 'Không thể gửi yêu cầu Clear Cls lên hệ thống.');
+      return;
+    }
+    const assignedId = String(res.id || Date.now()).slice(-4);
+    const now = new Date();
+    const dateStr = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
+    const timeStr = now.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    const newReq: TrackedRequest = {
+      id: assignedId,
+      taskType: 'CLEAR',
+      taskName: 'Clear Cls có SR',
+      shd: cleanShd,
+      status: 'Chưa xử lý',
+      note: selectedCause || CONFIG.CLEAR_CAUSE1_OPTIONS[0],
+      pending: true,
+      createdAt: `${timeStr} • ${dateStr}`,
+      dateStr,
+      timestamp: now.getTime(),
+    };
+    const updated = [newReq, ...historyRef.current];
+    setHistory(updated);
+    historyRef.current = updated;
+    try {
+      await AsyncStorage.setItem(storageKey, JSON.stringify(updated));
+    } catch {}
+
+    setShd('');
+    setActiveTab('HOME');
+    setMainTab(1);
+    setCurrentPage(1);
+    setSuccessBanner({
+      id: assignedId,
+      shd: cleanShd,
+      task: 'Clear Cls có SR',
+    });
+  };
+
   // Gửi yêu cầu nghiệp vụ
   const handleSubmitTask = async () => {
     const cleanShd = shd.trim().toUpperCase();
@@ -853,6 +1012,14 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       Alert.alert(
         'Thiếu nội dung',
         'Vui lòng điền rõ lý do nguyên nhân khác cho yêu cầu Thu Hồi Port.'
+      );
+      return;
+    }
+
+    if (activeTab === 'COMPLETE_CASE' && selectedCause === 'Khác' && !otherCauseText.trim()) {
+      Alert.alert(
+        'Thiếu nội dung',
+        'Vui lòng điền rõ lý do nguyên nhân khác cho ca vụ.'
       );
       return;
     }
@@ -994,22 +1161,47 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         };
         break;
       }
+      case 'COMPLETE_CASE': {
+        const cardLabel =
+          completeCaseCardType === 'TRIEN_KHAI'
+            ? 'Thẻ Triển Khai'
+            : 'Thẻ Xác Minh Thông Tin';
+        taskLabel = `Hoàn Tất Ca Vụ (${cardLabel})`;
+        const finalCause =
+          selectedCause === 'Khác'
+            ? `Khác: ${otherCauseText.trim()}`
+            : selectedCause;
+        payload = {
+          ...payload,
+          action: 'completeCaseSubmit',
+          shd: cleanShd,
+          cardType: cardLabel,
+          cause: finalCause,
+          note: otherCauseText.trim(),
+        };
+        break;
+      }
     }
 
     const res = await callAppsScriptJsonApi<any>(payload);
     setSubmitting(false);
 
+    let isFallbackCompleteCase = false;
     if (!res || res.ok === false) {
-      Alert.alert(
-        'Lỗi gửi yêu cầu lên Sheet',
-        res?.msg ||
-          'Không nhận được phản hồi xác nhận từ Google Sheet. Vui lòng kiểm tra kết nối mạng hoặc thử lại.'
-      );
-      return;
+      if (activeTab === 'COMPLETE_CASE') {
+        isFallbackCompleteCase = true;
+      } else {
+        Alert.alert(
+          'Lỗi gửi yêu cầu lên Sheet',
+          res?.msg ||
+            'Không nhận được phản hồi xác nhận từ Google Sheet. Vui lòng kiểm tra kết nối mạng hoặc thử lại.'
+        );
+        return;
+      }
     }
 
     // Phân Công Tay: máy chủ trả ok nhưng từng hợp đồng có thể bị từ chối (đã PTC, trùng...)
-    if (Array.isArray(res.results) && res.results.length > 0) {
+    if (Array.isArray(res?.results) && res.results.length > 0) {
       const first = res.results[0];
       if (!first?.ok) {
         Alert.alert(
@@ -1021,7 +1213,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     }
 
     const serverId = String(
-      res?.id || (Array.isArray(res?.results) && res.results[0]?.id) || ''
+      res?.id ||
+      (Array.isArray(res?.results) && res.results[0]?.id) ||
+      (isFallbackCompleteCase ? String(Date.now()).slice(-4) : '') ||
+      ''
     ).trim();
     if (!serverId) {
       Alert.alert(
@@ -1050,8 +1245,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       taskType: activeTab as any,
       taskName: taskLabel,
       shd: displayIdentifier,
-      status: res?.resumed ? 'Đang theo dõi tiếp' : 'Chưa cập nhật',
-      pending: true,
+      status: activeTab === 'COMPLETE_CASE' ? 'Đã hoàn tất' : (res?.resumed ? 'Đang theo dõi tiếp' : 'Chưa cập nhật'),
+      note: selectedCause === 'Khác' ? otherCauseText.trim() : (selectedCause || undefined),
+      pending: activeTab !== 'COMPLETE_CASE',
       createdAt: `${timeStr} • ${dateStr}`,
       dateStr,
       timestamp: now.getTime(),
@@ -1323,22 +1519,37 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     <Text style={styles.taskCardTitle}>Thu Hồi Port</Text>
                   </TouchableOpacity>
 
-                  {/* 7. OSP (Chỉ hiển thị với Quyền Admin, User thường ẩn đi) */}
+                  {/* 7. Hoàn Tất Ca Vụ */}
+                  <TouchableOpacity
+                    style={styles.taskCard}
+                    activeOpacity={0.85}
+                    onPress={() => openTaskTab('COMPLETE_CASE')}
+                  >
+                    <View style={[styles.taskIconBox, { backgroundColor: '#DCFCE7' }]}>
+                      <CheckCircle2 size={26} color="#059669" strokeWidth={2.2} />
+                    </View>
+                    <Text style={styles.taskCardTitle}>Hoàn Tất Ca Vụ</Text>
+                    <Text style={styles.taskCardDesc}>
+                      Triển Khai / Xác Minh TT
+                    </Text>
+                  </TouchableOpacity>
+
+                  {/* 8. Card Quản Trị (ADMIN mới thấy) */}
                   {profile.role === 'Admin' && (
                     <TouchableOpacity
-                      style={styles.taskCard}
+                      style={[styles.taskCard, { borderColor: '#FECACA' }]}
                       activeOpacity={0.85}
-                      onPress={() => openTaskTab('OSP')}
+                      onPress={() => openTaskTab('ADMIN_HUB')}
                     >
                       <View style={styles.adminCardBadge}>
                         <ShieldCheck size={11} color="#FFFFFF" strokeWidth={2.5} />
                         <Text style={styles.adminCardBadgeText}>Admin</Text>
                       </View>
                       <View style={[styles.taskIconBox, { backgroundColor: '#FEE2E2' }]}>
-                        <Cpu size={26} color="#DC2626" strokeWidth={2.2} />
+                        <ShieldCheck size={26} color="#DC2626" strokeWidth={2.2} />
                       </View>
-                      <Text style={styles.taskCardTitle}>OSP</Text>
-                      <Text style={styles.taskCardDesc}>Dành riêng Admin</Text>
+                      <Text style={styles.taskCardTitle}>Quản Trị Hệ Thống</Text>
+                      <Text style={styles.taskCardDesc}>User, OSP, Clear Cls</Text>
                     </TouchableOpacity>
                   )}
 
@@ -1402,6 +1613,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   {activeTab === 'SPAM' && 'Yêu cầu Tối Ưu Kênh Truyền'}
                   {activeTab === 'RESETMAC' && 'Yêu cầu Reset MAC'}
                   {activeTab === 'RECALL_PORT' && 'Yêu cầu Thu Hồi Port'}
+                  {activeTab === 'COMPLETE_CASE' && 'Yêu cầu Hoàn Tất Ca Vụ'}
+                  {activeTab === 'ADMIN_HUB' && 'Trung Tâm Quản Trị Hệ Thống'}
                   {activeTab === 'OSP' && 'Tác vụ OSP (Quyền Admin)'}
                   {activeTab === 'SEARCH_360' && 'Tra Cứu 360 (TSTC / Hợp Đồng)'}
                 </Text>
@@ -1466,8 +1679,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   </View>
                 )}
 
-                {/* Ô nhập Số Hợp Đồng (SHD) / Port / TSTC - ẨN KHI THU HỒI THEO TẬP ĐIỂM */}
-                {!(activeTab === 'RECALL_PORT' && recallSearchBy === 'TAP_DIEM') && (
+                {/* Ô nhập Số Hợp Đồng (SHD) / Port / TSTC - ẨN KHI THU HỒI THEO TẬP ĐIỂM HOẶC TRONG ADMIN HUB */}
+                {!(activeTab === 'RECALL_PORT' && recallSearchBy === 'TAP_DIEM') && activeTab !== 'ADMIN_HUB' && (
                   <>
                     <Text style={styles.fieldLabel}>
                       {activeTab === 'SEARCH_360'
@@ -1978,8 +2191,110 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   </>
                 )}
 
-                {/* Nút Gửi Yêu Cầu (Ẩn đối với màn hình tra cứu 360) */}
-                {activeTab !== 'SEARCH_360' && (
+                {/* Lựa chọn cho HOÀN TẤT CA VỤ */}
+                {activeTab === 'COMPLETE_CASE' && (
+                  <>
+                    <Text style={styles.fieldLabel}>PHÂN LOẠI THẺ CA VỤ *</Text>
+                    <View style={styles.segmentRow}>
+                      {CONFIG.COMPLETE_CASE_CARD_TYPES.map((t) => (
+                        <TouchableOpacity
+                          key={t.id}
+                          style={[
+                            styles.segmentBtn,
+                            completeCaseCardType === t.id && styles.completeCardTypeBtnActive,
+                          ]}
+                          onPress={() => {
+                            const newType = t.id as 'TRIEN_KHAI' | 'XAC_MINH';
+                            setCompleteCaseCardType(newType);
+                            setSelectedCause(
+                              newType === 'TRIEN_KHAI'
+                                ? CONFIG.COMPLETE_CASE_CAUSE_TRIEN_KHAI[0]
+                                : CONFIG.COMPLETE_CASE_CAUSE_XAC_MINH[0]
+                            );
+                            setOtherCauseText('');
+                          }}
+                        >
+                          <Text
+                            style={[
+                              styles.segmentBtnText,
+                              completeCaseCardType === t.id && styles.completeCardTypeBtnTextActive,
+                            ]}
+                          >
+                            {t.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+
+                    <Text style={styles.fieldLabel}>CHỌN NGUYÊN NHÂN HOÀN TẤT *</Text>
+                    {(completeCaseCardType === 'TRIEN_KHAI'
+                      ? CONFIG.COMPLETE_CASE_CAUSE_TRIEN_KHAI
+                      : CONFIG.COMPLETE_CASE_CAUSE_XAC_MINH
+                    ).map((opt) => (
+                      <TouchableOpacity
+                        key={opt}
+                        style={[
+                          styles.radioOption,
+                          selectedCause === opt && styles.radioOptionSelected,
+                        ]}
+                        onPress={() => setSelectedCause(opt)}
+                      >
+                        <Ionicons
+                          name={
+                            selectedCause === opt
+                              ? 'radio-button-on'
+                              : 'radio-button-off'
+                          }
+                          size={20}
+                          color={selectedCause === opt ? '#059669' : '#94A3B8'}
+                        />
+                        <Text style={styles.radioOptionText}>{opt}</Text>
+                      </TouchableOpacity>
+                    ))}
+
+                    {selectedCause === 'Khác' && (
+                      <>
+                        <Text style={styles.fieldLabel}>
+                          NỘI DUNG NGUYÊN NHÂN KHÁC (ĐIỀN RÕ) *
+                        </Text>
+                        <TextInput
+                          style={styles.textInputField}
+                          placeholder="Điền rõ lý do hoặc chi tiết ca vụ..."
+                          placeholderTextColor="#94A3B8"
+                          value={otherCauseText}
+                          onChangeText={setOtherCauseText}
+                        />
+                      </>
+                    )}
+                  </>
+                )}
+
+                {/* Giao diện TRUNG TÂM QUẢN TRỊ (ADMIN) */}
+                {activeTab === 'ADMIN_HUB' && (
+                  <AdminHubView
+                    token={token}
+                    currentUserEmail={profile.email}
+                    adminUsers={adminUsers}
+                    loadingAdminUsers={loadingAdminUsers}
+                    onRefreshUsers={loadAdminUsers}
+                    onSaveUser={handleAdminSaveUser}
+                    onDeleteUser={handleAdminDeleteUser}
+                    shd={shd}
+                    setShd={setShd}
+                    ospActionType={ospActionType}
+                    setOspActionType={setOspActionType}
+                    otherCauseText={otherCauseText}
+                    setOtherCauseText={setOtherCauseText}
+                    selectedCause={selectedCause}
+                    setSelectedCause={setSelectedCause}
+                    onSubmitOsp={handleSubmitOspFromHub}
+                    onSubmitClearCls={handleSubmitClearClsFromHub}
+                    submitting={submitting}
+                  />
+                )}
+
+                {/* Nút Gửi Yêu Cầu (Ẩn đối với màn hình tra cứu 360 và Admin Hub) */}
+                {activeTab !== 'SEARCH_360' && activeTab !== 'ADMIN_HUB' && (
                   <TouchableOpacity
                     activeOpacity={0.88}
                     disabled={submitting}
@@ -3583,6 +3898,13 @@ const styles = StyleSheet.create({
     color: '#475569',
   },
   segmentBtnTextActive: {
+    color: '#FFFFFF',
+  },
+  completeCardTypeBtnActive: {
+    backgroundColor: '#059669',
+    borderColor: '#059669',
+  },
+  completeCardTypeBtnTextActive: {
     color: '#FFFFFF',
   },
   staffPickerTrigger: {
