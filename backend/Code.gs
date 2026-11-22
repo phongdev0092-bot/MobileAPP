@@ -1928,12 +1928,13 @@ function timNguoiDaOffNgayLT_(sheet, nv, thang, nam, day, mapNhanSu) {
     if (rowThang !== Number(thang) || rowNam !== Number(nam)) continue;
 
     const thongTinNv = map[rowMail];
-    const rowBlock = thongTinNv ? chuanHoaChuoiLT_(thongTinNv.block) : chuanHoaChuoiLT_(row[LICHTRUC.COL_BLOCK - 1]);
+    if (!thongTinNv || thongTinNv.status !== 'ACTIVE') continue;
+    const rowBlock = chuanHoaChuoiLT_(thongTinNv.block);
 
     if (rowBlock === blockChuanHoa) {
       const giaTriNgay = String(row[LICHTRUC.COL_DAY1 - 1 + (Number(day) - 1)] || '').trim().toUpperCase();
       if (giaTriNgay === LICHTRUC.VAL_OFF) {
-        return row[LICHTRUC.COL_HOTEN - 1] || row[LICHTRUC.COL_MAIL - 1];
+        return thongTinNv.hoTen || row[LICHTRUC.COL_HOTEN - 1] || row[LICHTRUC.COL_MAIL - 1];
       }
     }
   }
@@ -1976,7 +1977,8 @@ function getLichTrucBlock(email, thang, nam) {
     if (rowThang !== Number(thang) || rowNam !== Number(nam)) continue;
 
     const thongTinNv = map[rowMail];
-    const rowBlock = thongTinNv ? chuanHoaChuoiLT_(thongTinNv.block) : chuanHoaChuoiLT_(row[LICHTRUC.COL_BLOCK - 1]);
+    if (!thongTinNv || thongTinNv.status !== 'ACTIVE') continue;
+    const rowBlock = chuanHoaChuoiLT_(thongTinNv.block);
     if (rowBlock !== blockChuanHoa) continue;
 
     const days = {};
@@ -1985,9 +1987,9 @@ function getLichTrucBlock(email, thang, nam) {
       days[d] = v ? String(v).trim().toUpperCase() : '';
     }
     lichBlock.push({
-      mail: row[LICHTRUC.COL_MAIL - 1],
-      hoTen: row[LICHTRUC.COL_HOTEN - 1],
-      msnv: row[LICHTRUC.COL_MSNV - 1],
+      mail: thongTinNv.mail || row[LICHTRUC.COL_MAIL - 1],
+      hoTen: thongTinNv.hoTen || row[LICHTRUC.COL_HOTEN - 1],
+      msnv: thongTinNv.msnv || row[LICHTRUC.COL_MSNV - 1],
       isMe: rowMail === normEmail_(email),
       days: days
     });
@@ -1995,6 +1997,10 @@ function getLichTrucBlock(email, thang, nam) {
 
   return {
     found: true,
+    mail: nv.mail,
+    msnv: nv.msnv,
+    hoTen: nv.hoTen,
+    doiTac: nv.doiTac,
     block: nv.block,
     soLuongNhanSuTrongBlock: demSoNhanVienTrongBlockLT_(nv.block),
     lichBlock: lichBlock

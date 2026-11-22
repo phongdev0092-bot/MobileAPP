@@ -782,6 +782,87 @@ export async function fetchBlockSchedule(
   }
 
   try {
+    // 1. Ưu tiên gọi Google Apps Script Real-time (0 giây độ trễ, không bị cache CSV của Google)
+    try {
+      const [gasBlock, gasEmp] = await Promise.all([
+        postToAppsScriptRaw<{
+          found?: boolean;
+          message?: string;
+          mail?: string;
+          msnv?: string;
+          hoTen?: string;
+          doiTac?: string;
+          block?: string;
+          soLuongNhanSuTrongBlock?: number;
+          lichBlock?: ScheduleMemberRow[];
+        }>({
+          action: 'getLichTrucBlock',
+          email,
+          thang: Number(thang),
+          nam: Number(nam),
+        }),
+        postToAppsScriptRaw<{
+          found?: boolean;
+          mail?: string;
+          msnv?: string;
+          hoTen?: string;
+          doiTac?: string;
+          block?: string;
+          soLuongNhanSuTrongBlock?: number;
+        }>({
+          action: 'getThongTinNhanVien',
+          email,
+        }),
+      ]);
+
+      if (gasBlock && gasBlock.found && Array.isArray(gasBlock.lichBlock)) {
+        const normalizedRows: ScheduleMemberRow[] = gasBlock.lichBlock.map((m) => {
+          const days: Record<number, string> = {};
+          for (let d = 1; d <= 31; d++) {
+            const rawV = m.days ? (m.days[d] ?? (m.days as any)[String(d)]) : '';
+            days[d] = rawV ? String(rawV).trim().toUpperCase() : '';
+          }
+          return {
+            mail: String(m.mail || '').trim(),
+            hoTen: String(m.hoTen || '').trim(),
+            msnv: String(m.msnv || '').trim(),
+            isMe: Boolean(m.isMe) || String(m.mail || '').trim().toLowerCase() === email,
+            days,
+          };
+        });
+
+        return {
+          found: true,
+          mail: String(gasBlock.mail || gasEmp?.mail || email),
+          msnv: String(gasBlock.msnv || gasEmp?.msnv || ''),
+          hoTen: String(gasBlock.hoTen || gasEmp?.hoTen || ''),
+          doiTac: String(gasBlock.doiTac || gasEmp?.doiTac || ''),
+          block: String(gasBlock.block || gasEmp?.block || ''),
+          soLuongNhanSuTrongBlock: Number(
+            gasBlock.soLuongNhanSuTrongBlock ?? gasEmp?.soLuongNhanSuTrongBlock ?? 0
+          ),
+          lichBlock: normalizedRows,
+        };
+      }
+
+      if (gasBlock && gasBlock.found === false && gasBlock.message) {
+        return {
+          found: false,
+          message: gasBlock.message,
+          mail: '',
+          msnv: '',
+          hoTen: '',
+          doiTac: '',
+          block: '',
+          soLuongNhanSuTrongBlock: 0,
+          lichBlock: [],
+        };
+      }
+    } catch {
+      // Nếu GAS gặp sự cố mạng, tự động chuyển sang đọc CSV dự phòng bên dưới
+    }
+
+    // 2. Dự phòng: Đọc trực tiếp từ CSV Export của Google Sheets
     const [empRows, schedRows] = await Promise.all([
       fetchEmployeeSheetRows(),
       fetchScheduleSheetRows(),
@@ -860,9 +941,8 @@ export async function fetchBlockSchedule(
       if (rowThang !== Number(thang) || rowNam !== Number(nam)) continue;
 
       const infoNv = empMap[rowMail];
-      const rowBlock = infoNv
-        ? normalizeBlockStr(infoNv.block)
-        : normalizeBlockStr(row[4]);
+      if (!infoNv || infoNv.status !== 'ACTIVE') continue;
+      const rowBlock = normalizeBlockStr(infoNv.block);
 
       if (rowBlock !== targetBlockNorm) continue;
 
