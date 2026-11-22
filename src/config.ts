@@ -102,26 +102,6 @@ export const CONFIG = {
   RECALL_PORT_CAUSE_OPTIONS: ['KH cũ dọn đi', 'HD cũ đã hủy', 'Khác'],
   PORT_OPTIONS: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
 
-  // Cấu hình Tác vụ "Hoàn Tất Ca Vụ"
-  COMPLETE_CASE_CARD_TYPES: [
-    { id: 'TRIEN_KHAI', label: 'Thẻ Triển Khai' },
-    { id: 'XAC_MINH', label: 'Thẻ Xác Minh Thông Tin' },
-  ],
-  COMPLETE_CASE_CAUSE_TRIEN_KHAI: [
-    'Thi công hoàn tất & KTV nghiệm thu',
-    'Khách hàng hẹn lại thời gian khác',
-    'Không liên hệ được khách hàng',
-    'Trở ngại hạ tầng / Hết port',
-    'Khác',
-  ],
-  COMPLETE_CASE_CAUSE_XAC_MINH: [
-    'Thông tin hợp đồng chính xác',
-    'Sai lệch địa chỉ / Số điện thoại KH',
-    'Khách hàng không có mặt tại địa chỉ',
-    'KH yêu cầu hủy / ngưng dịch vụ',
-    'Khác',
-  ],
-
   // Bảng màu đồng bộ với Logo Caption Nextsu AI - FPT Telecom (Xanh Cyan -> Xanh Dương -> Tím Gradient)
   COLORS: {
     PRIMARY: '#0066FF',

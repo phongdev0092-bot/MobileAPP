@@ -12,4 +12,3 @@ web-build/
 .env
 *.apk
 *.aab
-graphify-out/
