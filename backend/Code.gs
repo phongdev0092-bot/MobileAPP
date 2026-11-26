@@ -156,6 +156,22 @@ const LICHTRUC = {
   VAL_CA1: 'CA1'
 };
 
+// Sheet Phối Hợp Thu Bill (Clear Tín Hiệu & Cấp Lại Tín Hiệu)
+const BILL_COLLECTION = {
+  SHEET_ID: '1dXsWnon9myjDlcWM6BRLqDt_pxWBmTYFgb17k7R24vc',
+  CLEAR_GID: 0,
+  REISSUE_GID: 1100152201,
+  HEADER_ROW: 1,
+  RESULT_NEW: 'Chưa xử lý',
+  DATE_FMT: 'dd/MM/yyyy HH:mm:ss',
+  PENDING_VALUES: ['chưa xử lý', 'chưa cập nhật'],
+  ALLOWED_TITLES: [
+    'CB Chăm sóc & PT khách hàng',
+    'QL Quản lý đối tác',
+    'Đội trưởng Triển khai bảo trì'
+  ]
+};
+
 /** Trang chính Web hoặc JSON API khi truyền ?api=1 */
 function doGet(e) {
   if (e && e.parameter && e.parameter.action) {
@@ -218,6 +234,11 @@ function handleJsonApi_(req) {
     // API Hồ sơ nhân sự (Tab User)
     case 'getMyProfile':        res = apiGetMyProfile(req.token, req.email); break;
     case 'updateMyProfile':     res = apiUpdateMyProfile(req.token, req.data, req.email); break;
+    // API Phối Hợp Thu Bill (Clear Tín Hiệu & Cấp Lại Tín Hiệu)
+    case 'billClearSubmit':     res = apiBillClearSubmit(req.token, req.shd, req.email); break;
+    case 'billReissueSubmit':   res = apiBillReissueSubmit(req.token, req.shd, req.email); break;
+    case 'billClearStatus':     res = apiBillClearStatus(req.token, req.id, req.shd, req.email); break;
+    case 'billReissueStatus':   res = apiBillReissueStatus(req.token, req.id, req.shd, req.email); break;
     default:                 res = { ok: false, msg: 'Action không hợp lệ: ' + action };
   }
   return jsonOut_(res);
@@ -418,6 +439,7 @@ function apiChangePassword(email, oldPassword, newPassword, confirm) {
 const PROFILE_READONLY_COLS = {
   code: 6,      // F - Mã NV
   name: 5,      // E - Họ Tên NV
+  title: 15,    // O - Chức danh
   status: 13,   // M - Tình trạng tài khoản
   email: 11,    // K - Email
   area: 21,     // U - Vị trí phụ trách
@@ -628,7 +650,7 @@ function findEmployeeFresh_(email) {
       email: email,
       name: empName,
       code: get('Mã NV'),
-      title: get('Chức danh'),
+      title: String(row[14] || get('Chức danh') || '').trim(),
       region: get('Vùng'),
       partner: get('Đối tác'),
       block: get('Block'),
@@ -2190,5 +2212,196 @@ function apiSetHeaderTheme(token, themeObj) {
     return { ok: true, msg: 'Cập nhật chủ đề giao diện thành công!', theme: themeObj };
   } catch (e) {
     return { ok: false, msg: String(e && e.message ? e.message : e) };
+  }
+}
+
+/* ===================== Phối Hợp Thu Bill (Clear Tín Hiệu / Cấp Lại Tín Hiệu) ===================== */
+
+function getBillSheetByGid_(gid, label) {
+  const ss = SpreadsheetApp.openById(BILL_COLLECTION.SHEET_ID);
+  const sh = ss.getSheets().filter(function (s) { return s.getSheetId() === gid; })[0];
+  if (!sh) throw new Error('Không tìm thấy tab ' + label + ' (gid=' + gid + ')');
+  return sh;
+}
+function getBillClearSheet_() { return getBillSheetByGid_(BILL_COLLECTION.CLEAR_GID, 'Clear Tín Hiệu'); }
+function getBillReissueSheet_() { return getBillSheetByGid_(BILL_COLLECTION.REISSUE_GID, 'Cấp Lại Tín Hiệu'); }
+
+function billHdr_(s) {
+  return String(s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'd')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function billColMap_(sh, headerRow, names) {
+  const headers = sh.getRange(headerRow, 1, 1, sh.getLastColumn()).getValues()[0].map(billHdr_);
+  const c = {};
+  names.forEach(function (n) {
+    const i = headers.indexOf(billHdr_(n));
+    if (i < 0) throw new Error('Sheet thiếu cột "' + n + '"');
+    c[n] = i;
+  });
+  return c;
+}
+
+function billRandomMac_() {
+  const b = [];
+  for (let i = 0; i < 6; i++) b.push(Math.floor(Math.random() * 256));
+  b[0] = (b[0] & 0xfe) & 0xfc; // unicast, universally administered
+  return b.map(function (x) { return ('0' + x.toString(16)).slice(-2); }).join(':');
+}
+
+function isBillPending_(s) {
+  const v = normHeader_(s);
+  return v === '' || BILL_COLLECTION.PENDING_VALUES.indexOf(v) >= 0;
+}
+
+function normBillJobTitle_(s) {
+  return String(s || '').normalize('NFC').toLowerCase().replace(/\s*&\s*/g, ' & ').replace(/\s+/g, ' ').trim();
+}
+
+function canUseBillCollection_(emp, role) {
+  if (role === 'Admin' || isDefaultAdmin_(emp.profile.email)) return true;
+  const userTitle = normBillJobTitle_(emp.profile.title);
+  return BILL_COLLECTION.ALLOWED_TITLES.some(function (t) {
+    return normBillJobTitle_(t) === userTitle;
+  });
+}
+
+function apiBillClearSubmit(token, shd, emailHint) { return submitBillSignal_('clear', token, shd, emailHint); }
+function apiBillReissueSubmit(token, shd, emailHint) { return submitBillSignal_('reissue', token, shd, emailHint); }
+function apiBillClearStatus(token, id, shd, emailHint) { return billSignalStatus_('clear', token, id, shd, emailHint); }
+function apiBillReissueStatus(token, id, shd, emailHint) { return billSignalStatus_('reissue', token, id, shd, emailHint); }
+
+function submitBillSignal_(kind, token, shd, emailHint) {
+  const lock = LockService.getScriptLock();
+  let locked = false;
+  try {
+    const s = requireSession_(token, emailHint);
+    if (!s) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
+    if (!canUseBillCollection_(s.emp, s.role)) {
+      return { ok: false, msg: 'Chức danh của bạn không có quyền thực hiện Phối Hợp Thu Bill.' };
+    }
+
+    shd = String(shd || '').trim().toUpperCase();
+    if (!/^[A-Z0-9][A-Z0-9._\-\/]{3,29}$/.test(shd)) {
+      return { ok: false, msg: 'SHD không hợp lệ.' };
+    }
+
+    const isClear = kind === 'clear';
+    lock.waitLock(20000);
+    locked = true;
+
+    const sh = isClear ? getBillClearSheet_() : getBillReissueSheet_();
+    const H = BILL_COLLECTION.HEADER_ROW;
+    const names = isClear
+      ? ['ID', 'Ho va Ten', 'Mail', 'SHD', 'MAC', 'Ket qua', 'Ngay cap nhat']
+      : ['ID', 'Ho va Ten', 'Mail', 'SHD', 'Ket qua', 'Ngay cap nhat'];
+    const c = billColMap_(sh, H, names);
+
+    const lastRow = sh.getLastRow();
+    let maxId = 0;
+    let lastDataRow = H;
+    if (lastRow > H) {
+      const n = lastRow - H;
+      const ids = sh.getRange(H + 1, c['ID'] + 1, n, 1).getValues();
+      const shds = sh.getRange(H + 1, c['SHD'] + 1, n, 1).getDisplayValues();
+      const res = sh.getRange(H + 1, c['Ket qua'] + 1, n, 1).getDisplayValues();
+      for (let i = 0; i < n; i++) {
+        const v = parseInt(ids[i][0], 10);
+        if (!isNaN(v) && v > maxId) maxId = v;
+        if (ids[i][0] !== '' || String(shds[i][0]).trim() !== '') lastDataRow = H + 1 + i;
+      }
+      for (let i = n - 1; i >= 0; i--) {
+        if (String(shds[i][0]).normalize('NFC').trim().toUpperCase() === shd && isBillPending_(res[i][0])) {
+          return { ok: true, resumed: true, id: String(ids[i][0]), shd: shd };
+        }
+      }
+    }
+
+    let newId;
+    if (isClear) {
+      newId = maxId + 1;
+    } else {
+      const cs = getBillClearSheet_();
+      const cc = billColMap_(cs, BILL_COLLECTION.HEADER_ROW, ['ID', 'SHD']);
+      const cl = cs.getLastRow();
+      let found = '';
+      if (cl > BILL_COLLECTION.HEADER_ROW) {
+        const n2 = cl - BILL_COLLECTION.HEADER_ROW;
+        const cIds = cs.getRange(BILL_COLLECTION.HEADER_ROW + 1, cc['ID'] + 1, n2, 1).getValues();
+        const cShd = cs.getRange(BILL_COLLECTION.HEADER_ROW + 1, cc['SHD'] + 1, n2, 1).getDisplayValues();
+        for (let i = n2 - 1; i >= 0; i--) {
+          if (String(cShd[i][0]).normalize('NFC').trim().toUpperCase() === shd) {
+            found = cIds[i][0];
+            break;
+          }
+        }
+      }
+      if (found === '') {
+        return {
+          ok: false,
+          msg: 'SHD ' + shd + ' chưa có bên Clear Tín Hiệu nên chưa thể Cấp lại tín hiệu.'
+        };
+      }
+      newId = found;
+    }
+
+    const newRow = lastDataRow + 1;
+    if (newRow > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), newRow - sh.getMaxRows());
+
+    sh.getRange(newRow, c['ID'] + 1).setValue(newId);
+    sh.getRange(newRow, c['Ho va Ten'] + 1).setValue(s.emp.profile.name || '');
+    sh.getRange(newRow, c['Mail'] + 1).setNumberFormat('@').setValue(s.email);
+    sh.getRange(newRow, c['SHD'] + 1).setNumberFormat('@').setValue(shd);
+    if (isClear) sh.getRange(newRow, c['MAC'] + 1).setNumberFormat('@').setValue(billRandomMac_());
+    sh.getRange(newRow, c['Ket qua'] + 1).setValue(BILL_COLLECTION.RESULT_NEW);
+    sh.getRange(newRow, c['Ngay cap nhat'] + 1).setNumberFormat(BILL_COLLECTION.DATE_FMT).setValue(new Date());
+    SpreadsheetApp.flush();
+
+    return { ok: true, id: String(newId), shd: shd };
+  } catch (e) {
+    console.error(e);
+    return { ok: false, msg: 'Lỗi hệ thống: ' + (e && e.message ? e.message : e) };
+  } finally {
+    if (locked) { try { lock.releaseLock(); } catch (x) {} }
+  }
+}
+
+function billSignalStatus_(kind, token, id, shd, emailHint) {
+  try {
+    if (!sessionEmailFast_(token, emailHint)) {
+      return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
+    }
+    id = String(id || '').trim();
+    shd = String(shd || '').normalize('NFC').trim().toUpperCase();
+    if (!/^\d{1,12}$/.test(id)) return { ok: false, notFound: true, msg: 'Mã yêu cầu không hợp lệ.' };
+
+    const isClear = kind === 'clear';
+    const sh = isClear ? getBillClearSheet_() : getBillReissueSheet_();
+    const H = BILL_COLLECTION.HEADER_ROW;
+    const c = billColMap_(sh, H, ['ID', 'SHD', 'Ket qua']);
+    const lastRow = sh.getLastRow();
+    if (lastRow <= H) return { ok: false, notFound: true, msg: 'Không tìm thấy yêu cầu #' + id + '.' };
+
+    const start = Math.max(H + 1, lastRow - 1999);
+    const cnt = lastRow - start + 1;
+    const rd = function (ci) { return sh.getRange(start, ci + 1, cnt, 1).getDisplayValues(); };
+    const ids = rd(c['ID']);
+    const shds = rd(c['SHD']);
+    const res = rd(c['Ket qua']);
+    for (let i = cnt - 1; i >= 0; i--) {
+      if (String(ids[i][0]).trim() !== id) continue;
+      if (shd && String(shds[i][0]).normalize('NFC').trim().toUpperCase() !== shd) continue;
+      const st = String(res[i][0] || '').normalize('NFC').trim();
+      return { ok: true, status: st, pending: isBillPending_(st) };
+    }
+    return { ok: false, notFound: true, msg: 'Không tìm thấy yêu cầu #' + id + '.' };
+  } catch (e) {
+    return serverError_(e);
   }
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   AppState,
@@ -12,21 +12,19 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import { MD3LightTheme, PaperProvider } from 'react-native-paper';
-import { Clock } from 'lucide-react-native';
-import { AppIcon } from './src/components/AppIcon';
-
-const paperTheme = {
-  ...MD3LightTheme,
-  colors: {
-    ...MD3LightTheme.colors,
-    primary: '#0072FF',
-    secondaryContainer: '#DBEAFE',
-  },
-};
+import {
+  MD3DarkTheme,
+  MD3LightTheme,
+  PaperProvider,
+} from 'react-native-paper';
+import { AppIcon, Clock } from './src/components/AppIcon';
 import { CONFIG } from './src/config';
-import { LoginScreen } from './src/components/LoginScreen';
+import {
+  AuthThemeProvider,
+  useAuthTheme,
+} from './src/contexts/AuthThemeContext';
 import { HomeScreen } from './src/components/HomeScreen';
+import { LoginScreen } from './src/components/LoginScreen';
 import {
   clearSavedSession,
   EmployeeProfile,
@@ -35,28 +33,29 @@ import {
   recordLastActiveTime,
 } from './src/services/sheetAuthService';
 
-/**
- * Màn hình gốc của ứng dụng Nextsu AI - FPT Telecom.
- * - Khi mở app: nạp font hệ thống và kiểm tra phiên đăng nhập đã lưu.
- * - Kiểm tra thời gian không thao tác (Inactivity Timeout): Quá 2 tiếng tự động ngắt phiên.
- * - Sau khi đăng nhập thành công: mở giao diện chính Native cho toàn bộ các tác vụ vận hành.
- */
-export default function App() {
+const AppShell: React.FC = () => {
+  const { darkMode, tokens } = useAuthTheme();
   const [initializing, setInitializing] = useState<boolean>(true);
   const [token, setToken] = useState<string | null>(null);
   const [profile, setProfile] = useState<EmployeeProfile | null>(null);
-  const [savedPassword, setSavedPassword] = useState<string | undefined>(
-    undefined
-  );
+  const [sessionExpiredNotice, setSessionExpiredNotice] =
+    useState<boolean>(false);
 
-  // Modal thông báo khi tự động ngắt phiên sau 2 tiếng không thao tác
-  const [sessionExpiredNotice, setSessionExpiredNotice] = useState<boolean>(false);
-
-  // Mốc thời gian thao tác gần nhất (trong bộ nhớ RAM và ghi đĩa định kỳ)
   const lastActiveRef = useRef<number>(Date.now());
   const lastSavedToDiskRef = useRef<number>(0);
 
-  // Hàm ghi nhận thao tác của người dùng
+  const paperTheme = useMemo(() => {
+    const base = darkMode ? MD3DarkTheme : MD3LightTheme;
+    return {
+      ...base,
+      colors: {
+        ...base.colors,
+        primary: '#0072FF',
+        secondaryContainer: darkMode ? '#1E3A8A' : '#DBEAFE',
+      },
+    };
+  }, [darkMode]);
+
   const updateActivity = () => {
     const now = Date.now();
     lastActiveRef.current = now;
@@ -66,16 +65,13 @@ export default function App() {
     }
   };
 
-  // Tự động ngắt phiên đăng nhập
   const handleAutoLogout = async () => {
     await clearSavedSession();
     setToken(null);
     setProfile(null);
-    setSavedPassword(undefined);
     setSessionExpiredNotice(true);
   };
 
-  // Khởi động ứng dụng và kiểm tra phiên đã lưu
   useEffect(() => {
     getSavedSession()
       .then((session) => {
@@ -85,13 +81,11 @@ export default function App() {
           recordLastActiveTime();
           setToken(session.token);
           setProfile(session.profile);
-          setSavedPassword(session.password);
         }
       })
       .finally(() => setInitializing(false));
   }, []);
 
-  // Lắng nghe sự kiện thao tác toàn cục trên Web / PWA
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return;
     const handleEvent = () => updateActivity();
@@ -108,10 +102,8 @@ export default function App() {
     };
   }, []);
 
-  // Đồng hồ định kỳ kiểm tra thời gian không thao tác (mỗi 10 giây khi đang đăng nhập)
   useEffect(() => {
     if (!token || !profile) return;
-
     recordLastActiveTime();
 
     const interval = setInterval(() => {
@@ -124,61 +116,63 @@ export default function App() {
     return () => clearInterval(interval);
   }, [token, profile]);
 
-  // Kiểm tra thời gian không thao tác khi người dùng mở lại app từ chạy nền / mở khóa màn hình
   useEffect(() => {
     if (!token || !profile) return;
 
-    const subscription = AppState.addEventListener('change', async (nextState) => {
-      if (nextState === 'active') {
-        const lastDisk = await getLastActiveTime();
-        const effectiveLast = Math.max(lastActiveRef.current, lastDisk);
-        if (effectiveLast > 0 && Date.now() - effectiveLast >= CONFIG.INACTIVITY_TIMEOUT_MS) {
-          handleAutoLogout();
-        } else {
-          updateActivity();
+    const subscription = AppState.addEventListener(
+      'change',
+      async (nextState) => {
+        if (nextState === 'active') {
+          const lastDisk = await getLastActiveTime();
+          const effectiveLast = Math.max(lastActiveRef.current, lastDisk);
+          if (
+            effectiveLast > 0 &&
+            Date.now() - effectiveLast >= CONFIG.INACTIVITY_TIMEOUT_MS
+          ) {
+            handleAutoLogout();
+          } else {
+            updateActivity();
+          }
         }
       }
-    });
+    );
 
     return () => subscription.remove();
   }, [token, profile]);
 
-  const handleLoginSuccess = (
-    newToken: string,
-    newProfile: EmployeeProfile,
-    pwd?: string
-  ) => {
+  const handleLoginSuccess = (newToken: string, newProfile: EmployeeProfile) => {
     lastActiveRef.current = Date.now();
     lastSavedToDiskRef.current = Date.now();
     recordLastActiveTime();
     setToken(newToken);
     setProfile(newProfile);
-    setSavedPassword(pwd);
   };
 
   const handleLogout = async () => {
     await clearSavedSession();
     setToken(null);
     setProfile(null);
-    setSavedPassword(undefined);
   };
 
+  const isAuthScreen = initializing || !token || !profile;
+  const topBg = isAuthScreen ? tokens.background : CONFIG.COLORS.STATUS_BAR_BG;
+  const barStyle = isAuthScreen && !darkMode ? 'dark' : 'light';
+
   return (
-    <SafeAreaProvider>
-      <PaperProvider
-        theme={paperTheme}
-        settings={{
-          icon: (props) => (
-            <AppIcon
-              name={typeof props.name === 'string' ? props.name : 'info'}
-              size={props.size || 20}
-              color={props.color || '#0072FF'}
-            />
-          ),
-        }}
-      >
+    <PaperProvider
+      theme={paperTheme}
+      settings={{
+        icon: (props) => (
+          <AppIcon
+            name={typeof props.name === 'string' ? props.name : 'info'}
+            size={props.size || 20}
+            color={props.color || '#0072FF'}
+          />
+        ),
+      }}
+    >
       <View
-        style={styles.statusBarBackground}
+        style={[styles.statusBarBackground, { backgroundColor: topBg }]}
         onStartShouldSetResponderCapture={() => {
           updateActivity();
           return false;
@@ -189,30 +183,33 @@ export default function App() {
         }}
       >
         <StatusBar
-          style="light"
-          backgroundColor={CONFIG.COLORS.STATUS_BAR_BG}
+          style={barStyle}
+          backgroundColor={topBg}
           translucent={false}
         />
         <SafeAreaView
-          style={styles.safeArea}
+          style={[styles.safeArea, { backgroundColor: topBg }]}
           edges={['top', 'left', 'right', 'bottom']}
         >
           {initializing ? (
-            <View style={styles.splashLoading}>
-              <ActivityIndicator size="large" color="#00C6FF" />
+            <View
+              style={[
+                styles.splashLoading,
+                { backgroundColor: tokens.background },
+              ]}
+            >
+              <ActivityIndicator size="large" color={tokens.primary} />
             </View>
           ) : token && profile ? (
             <HomeScreen
               token={token}
               profile={profile}
-              password={savedPassword}
               onLogout={handleLogout}
             />
           ) : (
             <LoginScreen onLoginSuccess={handleLoginSuccess} />
           )}
 
-          {/* Modal thông báo tự động đăng xuất do 2 tiếng không thao tác */}
           <Modal
             visible={sessionExpiredNotice}
             animationType="fade"
@@ -220,17 +217,38 @@ export default function App() {
             onRequestClose={() => setSessionExpiredNotice(false)}
           >
             <View style={styles.expiredModalOverlay}>
-              <View style={styles.expiredModalCard}>
+              <View
+                style={[
+                  styles.expiredModalCard,
+                  { backgroundColor: tokens.card },
+                ]}
+              >
                 <View style={styles.expiredIconCircle}>
                   <Clock size={32} color="#DC2626" strokeWidth={2} />
                 </View>
-                <Text style={styles.expiredModalTitle}>Phiên làm việc đã hết hạn</Text>
-                <Text style={styles.expiredModalDesc}>
+                <Text
+                  style={[
+                    styles.expiredModalTitle,
+                    { color: tokens.foreground },
+                  ]}
+                >
+                  Phiên làm việc đã hết hạn
+                </Text>
+                <Text
+                  style={[
+                    styles.expiredModalDesc,
+                    { color: tokens.mutedForeground },
+                  ]}
+                >
                   Bạn đã không có thao tác trong ứng dụng hơn 2 tiếng.{'\n\n'}
-                  Vì lý do bảo mật thông tin tài khoản, hệ thống đã tự động ngắt phiên đăng nhập. Vui lòng đăng nhập lại để tiếp tục.
+                  Vì lý do bảo mật thông tin tài khoản, hệ thống đã tự động ngắt
+                  phiên đăng nhập. Vui lòng đăng nhập lại để tiếp tục.
                 </Text>
                 <TouchableOpacity
-                  style={styles.expiredModalBtn}
+                  style={[
+                    styles.expiredModalBtn,
+                    { backgroundColor: tokens.primary },
+                  ]}
                   onPress={() => setSessionExpiredNotice(false)}
                   activeOpacity={0.85}
                 >
@@ -241,7 +259,16 @@ export default function App() {
           </Modal>
         </SafeAreaView>
       </View>
-      </PaperProvider>
+    </PaperProvider>
+  );
+};
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AuthThemeProvider>
+        <AppShell />
+      </AuthThemeProvider>
     </SafeAreaProvider>
   );
 }
@@ -249,16 +276,13 @@ export default function App() {
 const styles = StyleSheet.create({
   statusBarBackground: {
     flex: 1,
-    backgroundColor: CONFIG.COLORS.STATUS_BAR_BG,
     paddingTop: Platform.OS === 'android' ? 0 : RNStatusBar.currentHeight,
   },
   safeArea: {
     flex: 1,
-    backgroundColor: CONFIG.COLORS.STATUS_BAR_BG,
   },
   splashLoading: {
     flex: 1,
-    backgroundColor: '#070F26',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -272,7 +296,6 @@ const styles = StyleSheet.create({
   expiredModalCard: {
     width: '100%',
     maxWidth: 360,
-    backgroundColor: '#FFFFFF',
     borderRadius: 20,
     padding: 24,
     alignItems: 'center',
@@ -294,22 +317,19 @@ const styles = StyleSheet.create({
   expiredModalTitle: {
     fontSize: 18,
     fontWeight: '800',
-    color: '#0F172A',
     textAlign: 'center',
     marginBottom: 10,
   },
   expiredModalDesc: {
     fontSize: 13.5,
-    color: '#475569',
     textAlign: 'center',
     lineHeight: 20,
     marginBottom: 20,
   },
   expiredModalBtn: {
     width: '100%',
-    height: 48,
-    borderRadius: 14,
-    backgroundColor: '#0072FF',
+    height: 46,
+    borderRadius: 13,
     alignItems: 'center',
     justifyContent: 'center',
   },

@@ -1,5 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CONFIG } from '../config';
+import {
+  constantTimeEqual,
+  hashPasswordWithEmail,
+  isSha256PasswordHash,
+  normalizeAuthEmail,
+} from '../utils/passwordHash';
 
 export interface EmployeeProfile {
   row: number;
@@ -66,8 +72,44 @@ export interface AuthResult {
 }
 
 const STORAGE_SESSION_KEY = '@nextsu_ai_session_v2';
-const STORAGE_LOCAL_PASS_PREFIX = '@nextsu_ai_user_pass_';
+const STORAGE_LOCAL_HASH_PREFIX = '@nextsu_ai_pwd_hash_v2_';
+const LEGACY_PLAIN_PASS_PREFIX = ['@nextsu_ai_user', 'pass_'].join('_');
 export const STORAGE_LAST_ACTIVE_KEY = '@nextsu_ai_last_active_at';
+
+/**
+ * Quét và xóa sạch toàn bộ mật khẩu plaintext từ phiên bản cũ trên thiết bị
+ */
+export async function purgeLegacyPlaintextStorage(): Promise<void> {
+  try {
+    const allKeys = await AsyncStorage.getAllKeys();
+    const legacyKeys = allKeys.filter((k) =>
+      k.startsWith(LEGACY_PLAIN_PASS_PREFIX)
+    );
+    if (legacyKeys.length > 0) {
+      await AsyncStorage.multiRemove(legacyKeys);
+    }
+
+    const rawSession = await AsyncStorage.getItem(STORAGE_SESSION_KEY);
+    if (rawSession) {
+      const parsed = JSON.parse(rawSession);
+      if (parsed && typeof parsed === 'object' && 'password' in parsed) {
+        const email = normalizeAuthEmail(parsed?.profile?.email || '');
+        const oldField = String(parsed.password || '');
+        let migratedHash = parsed.passwordHash || '';
+        if (!migratedHash && oldField && email) {
+          migratedHash = isSha256PasswordHash(oldField)
+            ? oldField
+            : await hashPasswordWithEmail(email, oldField);
+        }
+        delete parsed.password;
+        if (migratedHash) {
+          parsed.passwordHash = migratedHash;
+        }
+        await AsyncStorage.setItem(STORAGE_SESSION_KEY, JSON.stringify(parsed));
+      }
+    }
+  } catch {}
+}
 
 /**
  * Ghi lại mốc thời gian thao tác gần nhất của người dùng
@@ -187,32 +229,29 @@ async function refreshServerTokenIfNeeded(hintEmail?: string): Promise<string | 
   try {
     const rawSession = await AsyncStorage.getItem(STORAGE_SESSION_KEY);
     const parsedSession = rawSession ? JSON.parse(rawSession) : null;
-    const email = String(
+    const email = normalizeAuthEmail(
       hintEmail || parsedSession?.profile?.email || ''
-    )
-      .trim()
-      .toLowerCase();
+    );
     if (!email) return null;
 
-    const cachedPass =
-      parsedSession?.password ||
-      (await AsyncStorage.getItem(STORAGE_LOCAL_PASS_PREFIX + email)) ||
+    const cachedHash =
+      parsedSession?.passwordHash ||
+      (await AsyncStorage.getItem(STORAGE_LOCAL_HASH_PREFIX + email)) ||
       '';
-    if (!cachedPass) return null;
+    if (!cachedHash || !isSha256PasswordHash(cachedHash)) return null;
 
     let authRes = await postToAppsScriptRaw<AuthResult>({
       action: 'login',
       email,
-      password: cachedPass,
+      password: cachedHash,
     });
 
-    // Nếu trên Sheet cột H chưa kịp lưu mật khẩu (do tạo khi chưa gắn URL mới), tự động ghi lên Sheet
     if (authRes && authRes.needCreate) {
       authRes = await postToAppsScriptRaw<AuthResult>({
         action: 'setPassword',
         email,
-        password: cachedPass,
-        confirm: cachedPass,
+        password: cachedHash,
+        confirm: cachedHash,
       });
     }
 
@@ -220,7 +259,7 @@ async function refreshServerTokenIfNeeded(hintEmail?: string): Promise<string | 
       const updatedSession = {
         token: authRes.token,
         profile: authRes.profile || parsedSession?.profile,
-        password: cachedPass,
+        passwordHash: cachedHash,
       };
       await AsyncStorage.setItem(
         STORAGE_SESSION_KEY,
@@ -318,7 +357,7 @@ function buildProfileFromRow(row: string[], rowNumber: number, email: string): E
   };
 }
 export async function checkEmployeeEmail(rawEmail: string): Promise<CheckEmailResult> {
-  const email = String(rawEmail || '').trim().toLowerCase();
+  const email = normalizeAuthEmail(rawEmail);
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return { ok: false, msg: 'Địa chỉ Email không đúng định dạng.' };
   }
@@ -331,9 +370,7 @@ export async function checkEmployeeEmail(rawEmail: string): Promise<CheckEmailRe
 
     let foundRowIndex = -1;
     for (let i = 1; i < rows.length; i++) {
-      const rowEmail = String(rows[i][CONFIG.COL_INDEX_EMAIL] || '')
-        .trim()
-        .toLowerCase();
+      const rowEmail = normalizeAuthEmail(rows[i][CONFIG.COL_INDEX_EMAIL]);
       if (rowEmail === email) {
         foundRowIndex = i;
         break;
@@ -349,11 +386,12 @@ export async function checkEmployeeEmail(rawEmail: string): Promise<CheckEmailRe
 
     const r = rows[foundRowIndex];
     const sheetPassword = String(r[CONFIG.COL_INDEX_PASSWORD] || '').trim();
-    const cachedPass = await AsyncStorage.getItem(STORAGE_LOCAL_PASS_PREFIX + email);
+    const cachedHash = await AsyncStorage.getItem(
+      STORAGE_LOCAL_HASH_PREFIX + email
+    );
 
     const profile = buildProfileFromRow(r, foundRowIndex + 1, email);
-
-    const hasPassword = Boolean(sheetPassword || cachedPass);
+    const hasPassword = Boolean(sheetPassword || cachedHash);
 
     return {
       ok: true,
@@ -369,44 +407,56 @@ export async function checkEmployeeEmail(rawEmail: string): Promise<CheckEmailRe
 }
 
 /**
- * Bước 2a: Đăng nhập bằng mật khẩu
+ * Bước 2a: Đăng nhập bằng mật khẩu (băm một chiều SHA-256 kèm email trước khi gửi lên Sheet;
+ * nếu cột H trên Sheet đang lưu mật khẩu cũ chưa băm thì tự nâng cấp cột H lên SHA-256 ngay khi khớp).
  */
 export async function loginWithPassword(
   rawEmail: string,
   password: string
 ): Promise<AuthResult> {
-  const email = String(rawEmail || '').trim().toLowerCase();
+  const email = normalizeAuthEmail(rawEmail);
   const pwd = String(password || '');
 
   if (!pwd) {
     return { ok: false, msg: 'Vui lòng nhập mật khẩu của bạn.' };
   }
 
-  // 1. Thử xác thực qua Apps Script API trước
+  const pwdHash = await hashPasswordWithEmail(email, pwd);
+
+  // 1. Ưu tiên xác thực qua Apps Script bằng mã băm SHA-256
   const gasRes = await callAppsScriptJsonApi<AuthResult>({
     action: 'login',
     email,
-    password: pwd,
+    password: pwdHash,
   });
 
   if (gasRes && gasRes.ok && gasRes.profile) {
+    let enrichedProfile = gasRes.profile;
+    if (!enrichedProfile.title) {
+      const full = await fetchFullEmployeeProfile(email);
+      if (full?.title) {
+        enrichedProfile = { ...enrichedProfile, title: full.title };
+      }
+    }
     const sessionData = {
       token: gasRes.token || `TOKEN_${Date.now()}`,
-      profile: gasRes.profile,
-      password: pwd,
+      profile: enrichedProfile,
+      passwordHash: pwdHash,
     };
     await AsyncStorage.setItem(STORAGE_SESSION_KEY, JSON.stringify(sessionData));
-    await AsyncStorage.setItem(STORAGE_LOCAL_PASS_PREFIX + email, pwd);
-    return gasRes;
+    await AsyncStorage.setItem(STORAGE_LOCAL_HASH_PREFIX + email, pwdHash);
+    return {
+      ok: true,
+      token: sessionData.token,
+      profile: enrichedProfile,
+    };
   }
 
-  // 2. Xác thực trực tiếp trên dữ liệu Sheet
+  // 2. Đối chiếu dữ liệu trên Sheet (xử lý fallback CSV & tự nâng cấp tài khoản cũ chưa băm)
   const rows = await fetchEmployeeSheetRows();
   let foundRowIndex = -1;
   for (let i = 1; i < rows.length; i++) {
-    const rowEmail = String(rows[i][CONFIG.COL_INDEX_EMAIL] || '')
-      .trim()
-      .toLowerCase();
+    const rowEmail = normalizeAuthEmail(rows[i][CONFIG.COL_INDEX_EMAIL]);
     if (rowEmail === email) {
       foundRowIndex = i;
       break;
@@ -419,11 +469,11 @@ export async function loginWithPassword(
 
   const r = rows[foundRowIndex];
   const sheetPassword = String(r[CONFIG.COL_INDEX_PASSWORD] || '').trim();
-  const cachedPass = await AsyncStorage.getItem(STORAGE_LOCAL_PASS_PREFIX + email);
-  // Ưu tiên mật khẩu vừa được cập nhật hoặc mật khẩu trên Sheet
-  const effectiveStoredPass = cachedPass || sheetPassword || '';
+  const cachedHash = await AsyncStorage.getItem(
+    STORAGE_LOCAL_HASH_PREFIX + email
+  );
 
-  if (!effectiveStoredPass) {
+  if (!sheetPassword && !cachedHash) {
     return {
       ok: false,
       needCreate: true,
@@ -431,33 +481,60 @@ export async function loginWithPassword(
     };
   }
 
-  if (effectiveStoredPass !== pwd && sheetPassword !== pwd) {
+  const matchedHash =
+    (Boolean(cachedHash) && constantTimeEqual(cachedHash!, pwdHash)) ||
+    (isSha256PasswordHash(sheetPassword) &&
+      constantTimeEqual(sheetPassword, pwdHash));
+  const matchedLegacyPlain =
+    !isSha256PasswordHash(sheetPassword) &&
+    Boolean(sheetPassword) &&
+    sheetPassword === pwd;
+
+  if (!matchedHash && !matchedLegacyPlain) {
     return {
       ok: false,
       msg: 'Mật khẩu không chính xác. Vui lòng thử lại.',
     };
   }
 
-  const profile = buildProfileFromRow(r, foundRowIndex + 1, email);
+  // Nếu cột H trên Sheet đang lưu mật khẩu cũ (chưa băm) -> tự động ghi đè mã băm SHA-256 lên cột H
+  let upgradedToken: string | undefined;
+  if (matchedLegacyPlain) {
+    const upgradeRes = await postToAppsScriptRaw<AuthResult>({
+      action: 'changePassword',
+      email,
+      oldPassword: pwd,
+      newPassword: pwdHash,
+      confirm: pwdHash,
+    });
+    if (upgradeRes && upgradeRes.ok && upgradeRes.token) {
+      upgradedToken = upgradeRes.token;
+    }
+  }
 
-  const token = `NEXTSU_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const profile = buildProfileFromRow(r, foundRowIndex + 1, email);
+  const token =
+    upgradedToken ||
+    `NEXTSU_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  await AsyncStorage.setItem(STORAGE_LOCAL_HASH_PREFIX + email, pwdHash);
   await AsyncStorage.setItem(
     STORAGE_SESSION_KEY,
-    JSON.stringify({ token, profile, password: pwd })
+    JSON.stringify({ token, profile, passwordHash: pwdHash })
   );
 
   return { ok: true, token, profile };
 }
 
 /**
- * Bước 2b: Khởi tạo mật khẩu lần đầu
+ * Bước 2b: Khởi tạo mật khẩu lần đầu (băm SHA-256 kèm email và lưu thẳng lên cột H của Sheet)
  */
 export async function createFirstPassword(
   rawEmail: string,
   password: string,
   confirm: string
 ): Promise<AuthResult> {
-  const email = String(rawEmail || '').trim().toLowerCase();
+  const email = normalizeAuthEmail(rawEmail);
   const pwd = String(password || '');
   const cfm = String(confirm || '');
 
@@ -473,14 +550,16 @@ export async function createFirstPassword(
     return { ok: false, msg: check.msg || 'Không tìm thấy tài khoản.' };
   }
 
+  const pwdHash = await hashPasswordWithEmail(email, pwd);
+
   const gasRes = await callAppsScriptJsonApi<AuthResult>({
     action: 'setPassword',
     email,
-    password: pwd,
-    confirm: cfm,
+    password: pwdHash,
+    confirm: pwdHash,
   });
 
-  await AsyncStorage.setItem(STORAGE_LOCAL_PASS_PREFIX + email, pwd);
+  await AsyncStorage.setItem(STORAGE_LOCAL_HASH_PREFIX + email, pwdHash);
 
   const token =
     gasRes?.token || `NEXTSU_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -488,7 +567,7 @@ export async function createFirstPassword(
 
   await AsyncStorage.setItem(
     STORAGE_SESSION_KEY,
-    JSON.stringify({ token, profile, password: pwd })
+    JSON.stringify({ token, profile, passwordHash: pwdHash })
   );
 
   return {
@@ -499,7 +578,7 @@ export async function createFirstPassword(
 }
 
 /**
- * Bước 2c: Đổi mật khẩu (nhập mật khẩu cũ, mật khẩu mới và xác nhận -> cập nhật đúng vào ô mật khẩu của dòng nhân viên trên Sheet)
+ * Bước 2c: Đổi mật khẩu (đối chiếu mã băm cũ hoặc mật khẩu legacy cũ, ghi mã băm SHA-256 mới lên cột H của Sheet)
  */
 export async function changeEmployeePassword(
   rawEmail: string,
@@ -507,7 +586,7 @@ export async function changeEmployeePassword(
   newPassword: string,
   confirmPassword: string
 ): Promise<AuthResult> {
-  const email = String(rawEmail || '').trim().toLowerCase();
+  const email = normalizeAuthEmail(rawEmail);
   const oldPwd = String(oldPassword || '');
   const newPwd = String(newPassword || '');
   const cfmPwd = String(confirmPassword || '');
@@ -525,26 +604,23 @@ export async function changeEmployeePassword(
     return { ok: false, msg: 'Mật khẩu xác nhận không trùng khớp.' };
   }
 
-  // 1. Gọi Apps Script API để cập nhật trực tiếp vào đúng ô của dòng nhân viên trên Sheet
-  const gasRes = await callAppsScriptJsonApi<AuthResult>({
+  const oldHash = await hashPasswordWithEmail(email, oldPwd);
+  const newHash = await hashPasswordWithEmail(email, newPwd);
+
+  // 1. Thử cập nhật lên Sheet bằng mã băm SHA-256 trước
+  let gasRes = await callAppsScriptJsonApi<AuthResult>({
     action: 'changePassword',
     email,
-    oldPassword: oldPwd,
-    newPassword: newPwd,
-    confirm: cfmPwd,
+    oldPassword: oldHash,
+    newPassword: newHash,
+    confirm: newHash,
   });
 
-  if (gasRes && gasRes.ok === false) {
-    return { ok: false, msg: gasRes.msg || 'Mật khẩu hiện tại không đúng.' };
-  }
-
-  // 2. Đối chiếu mật khẩu hiện tại từ Sheet / bộ nhớ
+  // 2. Đối chiếu dòng nhân sự trên Sheet (hỗ trợ cả tài khoản cũ đang lưu mật khẩu chưa băm trên cột H)
   const rows = await fetchEmployeeSheetRows();
   let foundRowIndex = -1;
   for (let i = 1; i < rows.length; i++) {
-    const rowEmail = String(rows[i][CONFIG.COL_INDEX_EMAIL] || '')
-      .trim()
-      .toLowerCase();
+    const rowEmail = normalizeAuthEmail(rows[i][CONFIG.COL_INDEX_EMAIL]);
     if (rowEmail === email) {
       foundRowIndex = i;
       break;
@@ -557,29 +633,51 @@ export async function changeEmployeePassword(
 
   const r = rows[foundRowIndex];
   const sheetPassword = String(r[CONFIG.COL_INDEX_PASSWORD] || '').trim();
-  const cachedPass = await AsyncStorage.getItem(STORAGE_LOCAL_PASS_PREFIX + email);
-  const currentStoredPass = cachedPass || sheetPassword || '';
+  const cachedHash = await AsyncStorage.getItem(
+    STORAGE_LOCAL_HASH_PREFIX + email
+  );
 
-  if (currentStoredPass && currentStoredPass !== oldPwd && sheetPassword !== oldPwd) {
+  const validHashedOld =
+    (Boolean(cachedHash) && constantTimeEqual(cachedHash!, oldHash)) ||
+    (isSha256PasswordHash(sheetPassword) &&
+      constantTimeEqual(sheetPassword, oldHash));
+  const validLegacyOld =
+    !isSha256PasswordHash(sheetPassword) &&
+    Boolean(sheetPassword) &&
+    sheetPassword === oldPwd;
+
+  if (!validHashedOld && !validLegacyOld && !(gasRes && gasRes.ok)) {
     return { ok: false, msg: 'Mật khẩu hiện tại không chính xác.' };
   }
 
-  // Lưu mật khẩu mới và cập nhật phiên đăng nhập
-  await AsyncStorage.setItem(STORAGE_LOCAL_PASS_PREFIX + email, newPwd);
+  // Nếu trên cột H vẫn là mật khẩu cũ chưa băm -> gửi lệnh đổi từ oldPwd sang newHash lên Sheet
+  if (validLegacyOld && (!gasRes || gasRes.ok === false)) {
+    gasRes = await callAppsScriptJsonApi<AuthResult>({
+      action: 'changePassword',
+      email,
+      oldPassword: oldPwd,
+      newPassword: newHash,
+      confirm: newHash,
+    });
+    if (gasRes && gasRes.ok === false) {
+      return { ok: false, msg: gasRes.msg || 'Mật khẩu hiện tại không đúng.' };
+    }
+  }
+
+  await AsyncStorage.setItem(STORAGE_LOCAL_HASH_PREFIX + email, newHash);
 
   const profile = buildProfileFromRow(r, foundRowIndex + 1, email);
-
   const token =
     gasRes?.token || `NEXTSU_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
   await AsyncStorage.setItem(
     STORAGE_SESSION_KEY,
-    JSON.stringify({ token, profile, password: newPwd })
+    JSON.stringify({ token, profile, passwordHash: newHash })
   );
 
   return {
     ok: true,
-    msg: 'Đã cập nhật mật khẩu mới thành công!',
+    msg: 'Đã cập nhật mật khẩu mã hóa SHA-256 thành công!',
     token,
     profile,
   };
@@ -613,10 +711,11 @@ export async function fetchActiveStaffList(): Promise<StaffOption[]> {
 export async function getSavedSession(): Promise<{
   token: string;
   profile: EmployeeProfile;
-  password?: string;
+  passwordHash?: string;
   lastActiveAt?: number;
 } | null> {
   try {
+    await purgeLegacyPlaintextStorage();
     const raw = await AsyncStorage.getItem(STORAGE_SESSION_KEY);
     if (!raw) return null;
     const session = JSON.parse(raw);
@@ -628,6 +727,18 @@ export async function getSavedSession(): Promise<{
       // Đã quá 2 tiếng không thao tác -> Hết hạn phiên
       await clearSavedSession();
       return null;
+    }
+
+    // Nếu phiên lưu cũ chưa có cột Chức danh (cột O), tự động đồng bộ bổ sung từ Sheet để phân quyền Card chính xác
+    if (session?.profile?.email && !session.profile.title) {
+      const full = await fetchFullEmployeeProfile(session.profile.email);
+      if (full?.title) {
+        session.profile = { ...session.profile, title: full.title };
+        await AsyncStorage.setItem(
+          STORAGE_SESSION_KEY,
+          JSON.stringify(session)
+        );
+      }
     }
 
     return session;
@@ -648,6 +759,7 @@ export async function clearSavedSession(): Promise<void> {
 export interface FullEmployeeProfile {
   code: string;      // F - Mã NV (col 6, index 5)
   name: string;      // E - Họ Tên NV (col 5, index 4)
+  title?: string;    // O - Chức danh (col 15, index 14)
   status: string;    // M - Tình trạng tài khoản (col 13, index 12)
   email: string;     // K - Email (col 11, index 10)
   area: string;      // U - Vị trí phụ trách (col 21, index 20)
@@ -681,6 +793,7 @@ export async function fetchFullEmployeeProfile(
         return {
           code: String(row[5] || '').trim(),       // F
           name: String(row[4] || '').trim(),       // E
+          title: String(row[14] || '').trim(),     // O
           status: String(row[12] || '').trim(),    // M
           email: String(row[10] || '').trim(),     // K
           area: String(row[20] || '').trim(),      // U

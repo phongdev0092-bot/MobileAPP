@@ -214,6 +214,7 @@ export const UserProfileView: React.FC<Props> = ({ token, profile, onChangePassw
           <Card.Title title="Thông tin cơ bản" titleVariant="titleMedium" />
           {ro('Mã NV', data?.code, 'card-account-details-outline')}
           {ro('Họ Tên NV', data?.name, 'account-outline')}
+          {ro('Chức danh', data?.title || profile.title, 'badge-account-outline')}
           {ro('Tình trạng tài khoản', data?.status, 'shield-check-outline')}
           {ro('Email', data?.email, 'email-outline')}
           {ro('Vị trí phụ trách', data?.area, 'map-marker-outline')}

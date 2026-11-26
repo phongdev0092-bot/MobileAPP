@@ -23,6 +23,11 @@ export const CONFIG = {
   SCHEDULE_SHEET_ID: '1qd8O1bqbtHmbPUO_HhZv07YS9c27bo1QMWh4yvmQr2U',
   SCHEDULE_SHEET_GID: 0,
 
+  // Sheet Phối Hợp Thu Bill (Clear Tín Hiệu & Cấp Lại Tín Hiệu)
+  BILL_COLLECTION_SHEET_ID: '1dXsWnon9myjDlcWM6BRLqDt_pxWBmTYFgb17k7R24vc',
+  BILL_CLEAR_GID: 0,
+  BILL_REISSUE_GID: 1100152201,
+
   // Đường dẫn thực thi (exec) của Google Apps Script Web App
   WEB_APP_URL:
     'https://script.google.com/macros/s/AKfycbxwC2hCm1KfmPfFlsVQ7dO-x-6eE4lgFVu-JPOeGej12b_5Bxglxa_hVRxY2zcT3ZRk/exec',

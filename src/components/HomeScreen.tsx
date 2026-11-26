@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   BackHandler,
@@ -30,17 +30,23 @@ import {
   FileCheck,
   Calendar,
   User,
+  CreditCard,
+  AlertCircle,
 } from './AppIcon';
 import * as ImagePicker from 'expo-image-picker';
 import { CONFIG } from '../config';
 import { Alert } from '../utils/alert';
 import {
+  canExecuteTaskTab,
+  getCardVisibility,
+} from '../utils/cardPermissions';
+import {
   callAppsScriptJsonApi,
-  changeEmployeePassword,
   EmployeeProfile,
   fetchActiveStaffList,
   StaffOption,
 } from '../services/sheetAuthService';
+import { ChangePasswordModal } from './ChangePasswordModal';
 import { ScheduleView } from './ScheduleView';
 import { UserProfileView } from './UserProfileView';
 import { BottomNavigation } from 'react-native-paper';
@@ -62,7 +68,6 @@ const hasVietnameseDiacritics = (str: string): boolean => {
 interface HomeScreenProps {
   token: string;
   profile: EmployeeProfile;
-  password?: string;
   onLogout: () => void;
 }
 
@@ -76,6 +81,7 @@ type ActiveTab =
   | 'SPAM'
   | 'RESETMAC'
   | 'RECALL_PORT'
+  | 'BILL_COLLECTION'
   | 'OSP'
   | 'SEARCH_360'
   | 'WEBVIEW'
@@ -83,7 +89,18 @@ type ActiveTab =
 
 export interface TrackedRequest {
   id: string;
-  taskType: 'BYPASS' | 'CLEAR' | 'MYBAE' | 'MANUAL' | 'SPAM' | 'RESETMAC' | 'RECALL_PORT' | 'OSP' | 'SEARCH_360';
+  taskType:
+    | 'BYPASS'
+    | 'CLEAR'
+    | 'MYBAE'
+    | 'MANUAL'
+    | 'SPAM'
+    | 'RESETMAC'
+    | 'RECALL_PORT'
+    | 'BILL_CLEAR'
+    | 'BILL_REISSUE'
+    | 'OSP'
+    | 'SEARCH_360';
   taskName: string;
   shd: string;
   status: string;
@@ -109,7 +126,6 @@ export interface TrackedRequest {
 export const HomeScreen: React.FC<HomeScreenProps> = ({
   token,
   profile,
-  password,
   onLogout,
 }) => {
   const [activeTab, setActiveTab] = useState<ActiveTab>('HOME');
@@ -245,6 +261,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         return 'resetMacStatus';
       case 'RECALL_PORT':
         return 'recallPortStatus';
+      case 'BILL_CLEAR':
+        return 'billClearStatus';
+      case 'BILL_REISSUE':
+        return 'billReissueStatus';
       case 'OSP':
         return 'ospStatus';
       case 'SEARCH_360':
@@ -353,6 +373,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         action,
         token,
         id: item.id,
+        shd: item.shd,
         email: profile.email,
       });
 
@@ -567,12 +588,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [selectedStaff, setSelectedStaff] = useState<StaffOption | null>(null);
   const [showStaffModal, setShowStaffModal] = useState<boolean>(false);
 
-  // Modal đổi mật khẩu
+  // Modal đổi mật khẩu mã hóa SHA-256
   const [showChangePassModal, setShowChangePassModal] = useState<boolean>(false);
-  const [oldPassInput, setOldPassInput] = useState<string>('');
-  const [newPassInput, setNewPassInput] = useState<string>('');
-  const [confirmPassInput, setConfirmPassInput] = useState<string>('');
-  const [changingPass, setChangingPass] = useState<boolean>(false);
   const [avatarLoadError, setAvatarLoadError] = useState<boolean>(false);
 
   // States cho Thu Hồi Port
@@ -583,6 +600,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [tapDiemSearch, setTapDiemSearch] = useState<string>('');
   const [showTapDiemModal, setShowTapDiemModal] = useState<boolean>(false);
   const [loadingTapDiem, setLoadingTapDiem] = useState<boolean>(false);
+
+  // States cho Phối Hợp Thu Bill (2 tag: Clear Tín Hiệu & Cấp Lại Tín Hiệu)
+  const [billSubTab, setBillSubTab] = useState<'CLEAR_SIGNAL' | 'REISSUE_SIGNAL'>('CLEAR_SIGNAL');
+  const cardAccess = useMemo(
+    () => getCardVisibility(profile),
+    [profile.role, profile.title]
+  );
 
   // States cho OSP và Tra Cứu 360 (UI-only)
   const [ospActionType, setOspActionType] = useState<string>('Điều chuyển OSP');
@@ -660,11 +684,17 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
   // Chọn tab tác vụ và khởi tạo giá trị mặc định
   const openTaskTab = (tab: ActiveTab) => {
-    // Chỉ riêng tác vụ OSP yêu cầu quyền Admin
     if (tab === 'OSP' && profile.role !== 'Admin') {
       Alert.alert(
         'Quyền truy cập Admin',
         'Tác vụ "OSP" chỉ dành riêng cho tài khoản có quyền Quản trị viên (Admin).'
+      );
+      return;
+    }
+    if (!canExecuteTaskTab(tab, profile)) {
+      Alert.alert(
+        'Chưa được phân quyền',
+        `Chức danh "${profile.title || 'Chưa cập nhật'}" không có quyền truy cập mục này.`
       );
       return;
     }
@@ -686,6 +716,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       setSelectedTapDiem('');
       setSelectedPort(1);
       if (tapDiemList.length === 0) loadTapDiemList();
+    }
+    if (tab === 'BILL_COLLECTION') {
+      setBillSubTab('CLEAR_SIGNAL');
     }
     if (tab === 'OSP') setOspActionType('Điều chuyển OSP');
     setActiveTab(tab);
@@ -994,15 +1027,41 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         };
         break;
       }
+      case 'BILL_COLLECTION': {
+        if (billSubTab === 'CLEAR_SIGNAL') {
+          taskLabel = 'Thu Bill • Clear Tín Hiệu';
+          payload = {
+            ...payload,
+            action: 'billClearSubmit',
+            shd: cleanShd,
+          };
+        } else {
+          taskLabel = 'Thu Bill • Cấp Lại Tín Hiệu';
+          payload = {
+            ...payload,
+            action: 'billReissueSubmit',
+            shd: cleanShd,
+          };
+        }
+        break;
+      }
     }
 
     const res = await callAppsScriptJsonApi<any>(payload);
     setSubmitting(false);
 
     if (!res || res.ok === false) {
+      const rawMsg = String(res?.msg || '');
+      if (rawMsg.includes('Action không hợp lệ: bill')) {
+        Alert.alert(
+          'Cần cập nhật Code.gs',
+          'Apps Script chưa có phiên bản mới hỗ trợ Phối Hợp Thu Bill. Vui lòng dán nội dung backend/Code.gs lên Google Apps Script và chọn Deploy -> New version.'
+        );
+        return;
+      }
       Alert.alert(
         'Lỗi gửi yêu cầu lên Sheet',
-        res?.msg ||
+        rawMsg ||
           'Không nhận được phản hồi xác nhận từ Google Sheet. Vui lòng kiểm tra kết nối mạng hoặc thử lại.'
       );
       return;
@@ -1045,12 +1104,22 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         ? `${selectedTapDiem} (P.${selectedPort})`
         : cleanShd;
 
+    const recordedTaskType: TrackedRequest['taskType'] =
+      activeTab === 'BILL_COLLECTION'
+        ? billSubTab === 'CLEAR_SIGNAL'
+          ? 'BILL_CLEAR'
+          : 'BILL_REISSUE'
+        : (activeTab as any);
+
+    const initialPendingStatus =
+      activeTab === 'BILL_COLLECTION' ? 'Chưa xử lý' : 'Chưa cập nhật';
+
     const newReq: TrackedRequest = {
       id: assignedId,
-      taskType: activeTab as any,
+      taskType: recordedTaskType,
       taskName: taskLabel,
       shd: displayIdentifier,
-      status: res?.resumed ? 'Đang theo dõi tiếp' : 'Chưa cập nhật',
+      status: res?.resumed ? 'Đang theo dõi tiếp' : initialPendingStatus,
       pending: true,
       createdAt: `${timeStr} • ${dateStr}`,
       dateStr,
@@ -1106,7 +1175,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             Cổng Web Đồng Bộ
           </Text>
         </View>
-        <PortalWebView autoLoginEmail={profile.email} autoLoginPassword={password} />
+        <PortalWebView autoLoginEmail={profile.email} />
       </View>
     );
   }
@@ -1242,146 +1311,221 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           >
             {activeTab === 'HOME' ? (
               <>
-                <Text style={styles.sectionTitle}>DANH MỤC TÁC VỤ VẬN HÀNH</Text>
-
-                <View style={styles.gridContainer}>
-                  {/* 1. Bypass Công Suất */}
-                  <TouchableOpacity
-                    style={styles.taskCard}
-                    activeOpacity={0.85}
-                    onPress={() => openTaskTab('BYPASS')}
-                  >
-                    <View style={[styles.taskIconBox, { backgroundColor: '#E0F2FE' }]}>
-                      <Zap size={26} color="#0284C7" strokeWidth={2.2} />
+                <View style={styles.sectionHeaderRow}>
+                  <Text style={styles.sectionTitle}>DANH MỤC TÁC VỤ VẬN HÀNH</Text>
+                  {Boolean(profile.title) && (
+                    <View style={styles.titleRolePill}>
+                      <Text style={styles.titleRolePillText} numberOfLines={1}>
+                        {profile.title}
+                      </Text>
                     </View>
-                    <Text style={styles.taskCardTitle}>Bypass Công Suất</Text>
-                  </TouchableOpacity>
-
-                  {/* 2. Bypass NT Mỹ Bảo */}
-                  <TouchableOpacity
-                    style={styles.taskCard}
-                    activeOpacity={0.85}
-                    onPress={() => openTaskTab('MYBAE')}
-                  >
-                    <View style={[styles.taskIconBox, { backgroundColor: '#F3E8FF' }]}>
-                      <Camera size={26} color="#7C3AED" strokeWidth={2.2} />
-                    </View>
-                    <Text style={styles.taskCardTitle}>Bypass NT Mỹ Bảo</Text>
-                    <Text style={styles.taskCardDesc}>
-                      Hệ thống tự đóng KTV chọn trường sẵn
-                    </Text>
-                  </TouchableOpacity>
-
-                  {/* 3. Phân Công Tay */}
-                  <TouchableOpacity
-                    style={styles.taskCard}
-                    activeOpacity={0.85}
-                    onPress={() => openTaskTab('MANUAL')}
-                  >
-                    <View style={[styles.taskIconBox, { backgroundColor: '#DCFCE7' }]}>
-                      <Users size={26} color="#16A34A" strokeWidth={2.2} />
-                    </View>
-                    <Text style={styles.taskCardTitle}>Phân Công Tay</Text>
-                  </TouchableOpacity>
-
-                  {/* 4. Tối Ưu Kênh Truyền */}
-                  <TouchableOpacity
-                    style={styles.taskCard}
-                    activeOpacity={0.85}
-                    onPress={() => openTaskTab('SPAM')}
-                  >
-                    <View style={[styles.taskIconBox, { backgroundColor: '#FFE4E6' }]}>
-                      <Rocket size={26} color="#E11D48" strokeWidth={2.2} />
-                    </View>
-                    <Text style={styles.taskCardTitle}>Tối Ưu Kênh Truyền</Text>
-                    <Text style={styles.taskCardDesc}>
-                      Pool / Bypass IPNAT / Deactive IP
-                    </Text>
-                  </TouchableOpacity>
-
-                  {/* 5. Reset MAC */}
-                  <TouchableOpacity
-                    style={styles.taskCard}
-                    activeOpacity={0.85}
-                    onPress={() => openTaskTab('RESETMAC')}
-                  >
-                    <View style={[styles.taskIconBox, { backgroundColor: '#E0E7FF' }]}>
-                      <RefreshCw size={26} color="#4F46E5" strokeWidth={2.2} />
-                    </View>
-                    <Text style={styles.taskCardTitle}>Reset MAC</Text>
-                  </TouchableOpacity>
-
-                  {/* 6. Thu Hồi Port (Bình thường cho mọi nhân viên) */}
-                  <TouchableOpacity
-                    style={styles.taskCard}
-                    activeOpacity={0.85}
-                    onPress={() => openTaskTab('RECALL_PORT')}
-                  >
-                    <View style={[styles.taskIconBox, { backgroundColor: '#FEF3C7' }]}>
-                      <Network size={26} color="#D97706" strokeWidth={2.2} />
-                    </View>
-                    <Text style={styles.taskCardTitle}>Thu Hồi Port</Text>
-                  </TouchableOpacity>
-
-                  {/* 7. OSP (Chỉ hiển thị với Quyền Admin, User thường ẩn đi) */}
-                  {profile.role === 'Admin' && (
-                    <TouchableOpacity
-                      style={styles.taskCard}
-                      activeOpacity={0.85}
-                      onPress={() => openTaskTab('OSP')}
-                    >
-                      <View style={styles.adminCardBadge}>
-                        <ShieldCheck size={11} color="#FFFFFF" strokeWidth={2.5} />
-                        <Text style={styles.adminCardBadgeText}>Admin</Text>
-                      </View>
-                      <View style={[styles.taskIconBox, { backgroundColor: '#FEE2E2' }]}>
-                        <Cpu size={26} color="#DC2626" strokeWidth={2.2} />
-                      </View>
-                      <Text style={styles.taskCardTitle}>OSP</Text>
-                      <Text style={styles.taskCardDesc}>Dành riêng Admin</Text>
-                    </TouchableOpacity>
                   )}
-
-                  {/* 8. Tra Cứu 360 (Đang phát triển) */}
-                  <TouchableOpacity
-                    style={styles.taskCard}
-                    activeOpacity={0.85}
-                    onPress={() => {
-                      Alert.alert(
-                        'Tính năng đang phát triển',
-                        'Chức năng Tra Cứu 360 (TSTC / Hợp đồng) đang được hoàn thiện và sẽ sớm ra mắt trong bản cập nhật tới!'
-                      );
-                    }}
-                  >
-                    <View style={styles.devBadge}>
-                      <Text style={styles.devBadgeText}>Đang phát triển</Text>
-                    </View>
-                    <View style={[styles.taskIconBox, { backgroundColor: '#CCFBF1' }]}>
-                      <Search size={26} color="#0F766E" strokeWidth={2.2} />
-                    </View>
-                    <Text style={styles.taskCardTitle}>Tra Cứu 360</Text>
-                    <Text style={[styles.taskCardDesc, { color: '#D97706', fontWeight: '700' }]}>
-                      Đang phát triển
-                    </Text>
-                  </TouchableOpacity>
-
-                  {/* 9. Đo Mạng NetTools (Ping, Traceroute, Nslookup) */}
-                  <TouchableOpacity
-                    style={styles.taskCard}
-                    activeOpacity={0.85}
-                    onPress={() => openTaskTab('NET_TOOLS')}
-                  >
-                    <View style={[styles.taskIconBox, { backgroundColor: '#EFF6FF' }]}>
-                      <Activity size={26} color="#0072FF" strokeWidth={2.2} />
-                    </View>
-                    <Text style={styles.taskCardTitle}>Kiểm Tra Mạng</Text>
-                    <Text style={styles.taskCardDesc}>
-                      Ping / Trace / DNS
-                    </Text>
-                  </TouchableOpacity>
                 </View>
 
+                {!cardAccess.hasAnyCard ? (
+                  <View style={styles.emptyPermissionCard}>
+                    <View style={styles.emptyPermissionIconBox}>
+                      <ShieldCheck size={28} color="#64748B" strokeWidth={2.2} />
+                    </View>
+                    <Text style={styles.emptyPermissionTitle}>
+                      Chưa được phân quyền danh mục tác vụ
+                    </Text>
+                    <Text style={styles.emptyPermissionDesc}>
+                      Chức danh hiện tại trên hệ thống:{' '}
+                      <Text style={{ fontWeight: '800', color: '#0F172A' }}>
+                        {profile.title || 'Chưa cập nhật'}
+                      </Text>
+                      .{'\n'}Vui lòng liên hệ Quản trị viên nếu cần cập nhật cột Chức danh.
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={styles.gridContainer}>
+                    {/* Nhóm 6 Card Kỹ thuật đầu */}
+                    {cardAccess.canSeeTechCards && (
+                      <>
+                        {/* 1. Bypass Công Suất */}
+                        <TouchableOpacity
+                          style={styles.taskCard}
+                          activeOpacity={0.85}
+                          onPress={() => openTaskTab('BYPASS')}
+                        >
+                          <View style={[styles.taskIconBox, { backgroundColor: '#E0F2FE' }]}>
+                            <Zap size={26} color="#0284C7" strokeWidth={2.2} />
+                          </View>
+                          <Text style={styles.taskCardTitle}>Bypass Công Suất</Text>
+                        </TouchableOpacity>
 
+                        {/* 2. Bypass NT Mỹ Bảo */}
+                        <TouchableOpacity
+                          style={styles.taskCard}
+                          activeOpacity={0.85}
+                          onPress={() => openTaskTab('MYBAE')}
+                        >
+                          <View style={[styles.taskIconBox, { backgroundColor: '#F3E8FF' }]}>
+                            <Camera size={26} color="#7C3AED" strokeWidth={2.2} />
+                          </View>
+                          <Text style={styles.taskCardTitle}>Bypass NT Mỹ Bảo</Text>
+                          <Text style={styles.taskCardDesc}>
+                            Hệ thống tự đóng KTV chọn trường sẵn
+                          </Text>
+                        </TouchableOpacity>
+
+                        {/* 3. Phân Công Tay */}
+                        <TouchableOpacity
+                          style={styles.taskCard}
+                          activeOpacity={0.85}
+                          onPress={() => openTaskTab('MANUAL')}
+                        >
+                          <View style={[styles.taskIconBox, { backgroundColor: '#DCFCE7' }]}>
+                            <Users size={26} color="#16A34A" strokeWidth={2.2} />
+                          </View>
+                          <Text style={styles.taskCardTitle}>Phân Công Tay</Text>
+                        </TouchableOpacity>
+
+                        {/* 4. Tối Ưu Kênh Truyền */}
+                        <TouchableOpacity
+                          style={styles.taskCard}
+                          activeOpacity={0.85}
+                          onPress={() => openTaskTab('SPAM')}
+                        >
+                          <View style={[styles.taskIconBox, { backgroundColor: '#FFE4E6' }]}>
+                            <Rocket size={26} color="#E11D48" strokeWidth={2.2} />
+                          </View>
+                          <Text style={styles.taskCardTitle}>Tối Ưu Kênh Truyền</Text>
+                          <Text style={styles.taskCardDesc}>
+                            Pool / Bypass IPNAT / Deactive IP
+                          </Text>
+                        </TouchableOpacity>
+
+                        {/* 5. Reset MAC */}
+                        <TouchableOpacity
+                          style={styles.taskCard}
+                          activeOpacity={0.85}
+                          onPress={() => openTaskTab('RESETMAC')}
+                        >
+                          <View style={[styles.taskIconBox, { backgroundColor: '#E0E7FF' }]}>
+                            <RefreshCw size={26} color="#4F46E5" strokeWidth={2.2} />
+                          </View>
+                          <Text style={styles.taskCardTitle}>Reset MAC</Text>
+                        </TouchableOpacity>
+
+                        {/* 6. Thu Hồi Port */}
+                        <TouchableOpacity
+                          style={styles.taskCard}
+                          activeOpacity={0.85}
+                          onPress={() => openTaskTab('RECALL_PORT')}
+                        >
+                          <View style={[styles.taskIconBox, { backgroundColor: '#FEF3C7' }]}>
+                            <Network size={26} color="#D97706" strokeWidth={2.2} />
+                          </View>
+                          <Text style={styles.taskCardTitle}>Thu Hồi Port</Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
+
+                    {/* Phối Hợp Thu Bill (Clear Tín Hiệu / Cấp Lại Tín Hiệu) */}
+                    {cardAccess.canSeeBillCollection && (
+                      <TouchableOpacity
+                        style={styles.taskCard}
+                        activeOpacity={0.85}
+                        onPress={() => openTaskTab('BILL_COLLECTION')}
+                      >
+                        <View style={[styles.taskIconBox, { backgroundColor: '#D1FAE5' }]}>
+                          <CreditCard size={26} color="#059669" strokeWidth={2.2} />
+                        </View>
+                        <Text style={styles.taskCardTitle}>Phối Hợp Thu Bill</Text>
+                        <Text style={styles.taskCardDesc}>
+                          Clear Tín Hiệu / Cấp Lại Tín Hiệu
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+
+                    {/* Phối Hợp SOS (Đang phát triển) */}
+                    {cardAccess.canSeeSos && (
+                      <TouchableOpacity
+                        style={styles.taskCard}
+                        activeOpacity={0.85}
+                        onPress={() => {
+                          Alert.alert(
+                            'Tính năng đang phát triển',
+                            'Chức năng Phối Hợp SOS đang được hoàn thiện và sẽ sớm ra mắt trong bản cập nhật tới!'
+                          );
+                        }}
+                      >
+                        <View style={styles.devBadge}>
+                          <Text style={styles.devBadgeText}>Đang phát triển</Text>
+                        </View>
+                        <View style={[styles.taskIconBox, { backgroundColor: '#FFEDD5' }]}>
+                          <AlertCircle size={26} color="#EA580C" strokeWidth={2.2} />
+                        </View>
+                        <Text style={styles.taskCardTitle}>Phối Hợp SOS</Text>
+                        <Text style={[styles.taskCardDesc, { color: '#D97706', fontWeight: '700' }]}>
+                          Đang phát triển
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+
+                    {/* OSP (Chỉ hiển thị với Quyền Admin) */}
+                    {cardAccess.canSeeOsp && (
+                      <TouchableOpacity
+                        style={styles.taskCard}
+                        activeOpacity={0.85}
+                        onPress={() => openTaskTab('OSP')}
+                      >
+                        <View style={styles.adminCardBadge}>
+                          <ShieldCheck size={11} color="#FFFFFF" strokeWidth={2.5} />
+                          <Text style={styles.adminCardBadgeText}>Admin</Text>
+                        </View>
+                        <View style={[styles.taskIconBox, { backgroundColor: '#FEE2E2' }]}>
+                          <Cpu size={26} color="#DC2626" strokeWidth={2.2} />
+                        </View>
+                        <Text style={styles.taskCardTitle}>OSP</Text>
+                        <Text style={styles.taskCardDesc}>Dành riêng Admin</Text>
+                      </TouchableOpacity>
+                    )}
+
+                    {/* Tra Cứu 360 & Kiểm Tra Mạng (Nhóm Kỹ thuật / Toàn quyền) */}
+                    {cardAccess.canSeeTechCards && (
+                      <>
+                        <TouchableOpacity
+                          style={styles.taskCard}
+                          activeOpacity={0.85}
+                          onPress={() => {
+                            Alert.alert(
+                              'Tính năng đang phát triển',
+                              'Chức năng Tra Cứu 360 (TSTC / Hợp đồng) đang được hoàn thiện và sẽ sớm ra mắt trong bản cập nhật tới!'
+                            );
+                          }}
+                        >
+                          <View style={styles.devBadge}>
+                            <Text style={styles.devBadgeText}>Đang phát triển</Text>
+                          </View>
+                          <View style={[styles.taskIconBox, { backgroundColor: '#CCFBF1' }]}>
+                            <Search size={26} color="#0F766E" strokeWidth={2.2} />
+                          </View>
+                          <Text style={styles.taskCardTitle}>Tra Cứu 360</Text>
+                          <Text style={[styles.taskCardDesc, { color: '#D97706', fontWeight: '700' }]}>
+                            Đang phát triển
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={styles.taskCard}
+                          activeOpacity={0.85}
+                          onPress={() => openTaskTab('NET_TOOLS')}
+                        >
+                          <View style={[styles.taskIconBox, { backgroundColor: '#EFF6FF' }]}>
+                            <Activity size={26} color="#0072FF" strokeWidth={2.2} />
+                          </View>
+                          <Text style={styles.taskCardTitle}>Kiểm Tra Mạng</Text>
+                          <Text style={styles.taskCardDesc}>
+                            Ping / Trace / DNS
+                          </Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
+                  </View>
+                )}
               </>
             ) : (
               /* FORM CHI TIẾT TỪNG TÁC VỤ */
@@ -1402,9 +1546,88 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   {activeTab === 'SPAM' && 'Yêu cầu Tối Ưu Kênh Truyền'}
                   {activeTab === 'RESETMAC' && 'Yêu cầu Reset MAC'}
                   {activeTab === 'RECALL_PORT' && 'Yêu cầu Thu Hồi Port'}
+                  {activeTab === 'BILL_COLLECTION' && 'Phối Hợp Thu Bill'}
                   {activeTab === 'OSP' && 'Tác vụ OSP (Quyền Admin)'}
                   {activeTab === 'SEARCH_360' && 'Tra Cứu 360 (TSTC / Hợp Đồng)'}
                 </Text>
+
+                {/* 2 Tag chuyển đổi cho Phối Hợp Thu Bill: Clear Tín Hiệu & Cấp Lại Tín Hiệu */}
+                {activeTab === 'BILL_COLLECTION' && (
+                  <View style={{ marginBottom: 14 }}>
+                    <Text style={styles.fieldLabel}>CHỌN NGHIỆP VỤ PHỐI HỢP *</Text>
+                    <View style={styles.billTagRow}>
+                      <TouchableOpacity
+                        activeOpacity={0.85}
+                        onPress={() => setBillSubTab('CLEAR_SIGNAL')}
+                        style={[
+                          styles.billTagBtn,
+                          billSubTab === 'CLEAR_SIGNAL' && styles.billTagBtnClearActive,
+                        ]}
+                      >
+                        <Zap
+                          size={16}
+                          color={billSubTab === 'CLEAR_SIGNAL' ? '#FFFFFF' : '#059669'}
+                          strokeWidth={2.2}
+                        />
+                        <Text
+                          style={[
+                            styles.billTagText,
+                            billSubTab === 'CLEAR_SIGNAL' && styles.billTagTextActive,
+                          ]}
+                        >
+                          Clear Tín Hiệu
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        activeOpacity={0.85}
+                        onPress={() => setBillSubTab('REISSUE_SIGNAL')}
+                        style={[
+                          styles.billTagBtn,
+                          billSubTab === 'REISSUE_SIGNAL' && styles.billTagBtnReissueActive,
+                        ]}
+                      >
+                        <RefreshCw
+                          size={16}
+                          color={billSubTab === 'REISSUE_SIGNAL' ? '#FFFFFF' : '#0284C7'}
+                          strokeWidth={2.2}
+                        />
+                        <Text
+                          style={[
+                            styles.billTagText,
+                            billSubTab === 'REISSUE_SIGNAL' && styles.billTagTextActive,
+                          ]}
+                        >
+                          Cấp Lại Tín Hiệu
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    <View
+                      style={[
+                        styles.billInfoBanner,
+                        billSubTab === 'REISSUE_SIGNAL' && styles.billInfoBannerBlue,
+                      ]}
+                    >
+                      <Ionicons
+                        name="information-circle"
+                        size={17}
+                        color={billSubTab === 'CLEAR_SIGNAL' ? '#047857' : '#0369A1'}
+                        style={{ marginTop: 1 }}
+                      />
+                      <Text
+                        style={[
+                          styles.billInfoBannerText,
+                          billSubTab === 'REISSUE_SIGNAL' && { color: '#0C4A6E' },
+                        ]}
+                      >
+                        {billSubTab === 'CLEAR_SIGNAL'
+                          ? 'Ghi nhận yêu cầu Clear Tín Hiệu kèm tự động sinh địa chỉ MAC ngẫu nhiên lên hệ thống.'
+                          : 'Cấp lại tín hiệu cho Số Hợp Đồng (SHD) đã thực hiện bên Clear Tín Hiệu trước đó.'}
+                      </Text>
+                    </View>
+                  </View>
+                )}
 
                 {/* Chọn phương thức cho Thu Hồi Port: SHD hoặc Tập Điểm */}
                 {activeTab === 'RECALL_PORT' && (
@@ -2428,9 +2651,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           profile={profile}
           onLogout={onLogout}
           onChangePassword={() => {
-            setOldPassInput('');
-            setNewPassInput('');
-            setConfirmPassInput('');
             setShowChangePassModal(true);
           }}
         />
@@ -2591,92 +2811,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         </View>
       </Modal>
 
-      {/* Modal Đổi mật khẩu */}
-      <Modal visible={showChangePassModal} animationType="fade" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Đổi mật khẩu</Text>
-              <TouchableOpacity onPress={() => setShowChangePassModal(false)}>
-                <Ionicons name="close" size={24} color="#0F172A" />
-              </TouchableOpacity>
-            </View>
-
-            <Text style={styles.fieldLabel}>Mật khẩu hiện tại</Text>
-            <TextInput
-              style={styles.textInputField}
-              placeholder="Nhập mật khẩu cũ..."
-              placeholderTextColor="#94A3B8"
-              secureTextEntry
-              autoCapitalize="none"
-              value={oldPassInput}
-              onChangeText={setOldPassInput}
-            />
-
-            <Text style={styles.fieldLabel}>Mật khẩu mới</Text>
-            <TextInput
-              style={styles.textInputField}
-              placeholder="Tối thiểu 6 ký tự..."
-              placeholderTextColor="#94A3B8"
-              secureTextEntry
-              autoCapitalize="none"
-              value={newPassInput}
-              onChangeText={setNewPassInput}
-            />
-
-            <Text style={styles.fieldLabel}>Xác nhận mật khẩu mới</Text>
-            <TextInput
-              style={styles.textInputField}
-              placeholder="Nhập lại mật khẩu mới..."
-              placeholderTextColor="#94A3B8"
-              secureTextEntry
-              autoCapitalize="none"
-              value={confirmPassInput}
-              onChangeText={setConfirmPassInput}
-            />
-
-            <TouchableOpacity
-              activeOpacity={0.88}
-              disabled={changingPass}
-              onPress={async () => {
-                setChangingPass(true);
-                const res = await changeEmployeePassword(
-                  profile.email,
-                  oldPassInput,
-                  newPassInput,
-                  confirmPassInput
-                );
-                setChangingPass(false);
-                if (!res.ok) {
-                  Alert.alert('Lỗi', res.msg || 'Không thể đổi mật khẩu.');
-                  return;
-                }
-                setShowChangePassModal(false);
-                Alert.alert(
-                  'Thành công',
-                  'Mật khẩu của bạn đã được cập nhật thành công lên hệ thống!'
-                );
-              }}
-              style={styles.submitTaskBtn}
-            >
-              <LinearGradient
-                colors={['#00C6FF', '#0072FF', '#6C3CE9']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.submitTaskGradient}
-              >
-                {changingPass ? (
-                  <ActivityIndicator color="#FFFFFF" />
-                ) : (
-                  <Text style={styles.submitTaskBtnText}>
-                    Lưu mật khẩu mới
-                  </Text>
-                )}
-              </LinearGradient>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      {/* Hộp thoại Đổi mật khẩu (băm SHA-256 lên Sheet) */}
+      <ChangePasswordModal
+        visible={showChangePassModal}
+        email={profile.email}
+        onClose={() => setShowChangePassModal(false)}
+        onSuccess={(msg) => {
+          Alert.alert('Thành công', msg);
+        }}
+      />
 
       {/* Modal xác nhận Xóa toàn bộ lịch sử */}
       <Modal
@@ -4009,5 +4152,114 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 10,
+    flexWrap: 'wrap',
+  },
+  titleRolePill: {
+    backgroundColor: '#E0F2FE',
+    borderColor: '#BAE6FD',
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    maxWidth: '62%',
+  },
+  titleRolePillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#0369A1',
+  },
+  emptyPermissionCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 24,
+    alignItems: 'center',
+    marginTop: 6,
+  },
+  emptyPermissionIconBox: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  emptyPermissionTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0F172A',
+    textAlign: 'center',
+  },
+  emptyPermissionDesc: {
+    marginTop: 6,
+    fontSize: 13,
+    lineHeight: 19,
+    color: '#64748B',
+    textAlign: 'center',
+  },
+  billTagRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  billTagBtn: {
+    flex: 1,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    backgroundColor: '#F8FAFC',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    paddingHorizontal: 10,
+  },
+  billTagBtnClearActive: {
+    backgroundColor: '#059669',
+    borderColor: '#059669',
+  },
+  billTagBtnReissueActive: {
+    backgroundColor: '#0284C7',
+    borderColor: '#0284C7',
+  },
+  billTagText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#334155',
+  },
+  billTagTextActive: {
+    color: '#FFFFFF',
+  },
+  billInfoBanner: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: '#ECFDF5',
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+    borderRadius: 11,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  billInfoBannerBlue: {
+    backgroundColor: '#F0F9FF',
+    borderColor: '#BAE6FD',
+  },
+  billInfoBannerText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
+    color: '#065F46',
   },
 });

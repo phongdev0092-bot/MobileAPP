@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -9,10 +10,29 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from './AppIcon';
+import Svg, { Circle, Defs, Path, Pattern, Rect, SvgUri } from 'react-native-svg';
+import {
+  AlertCircle,
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  CheckCircle2,
+  Eye,
+  EyeOff,
+  KeyRound,
+  Languages,
+  Lock,
+  Mail,
+  Moon,
+  ShieldCheck,
+  Sparkles,
+  Sun,
+} from './AppIcon';
+import { useAuthTheme } from '../contexts/AuthThemeContext';
 import {
   changeEmployeePassword,
   checkEmployeeEmail,
@@ -20,13 +40,14 @@ import {
   EmployeeProfile,
   loginWithPassword,
 } from '../services/sheetAuthService';
+import { AUTH_METRICS } from '../theme/authTokens';
+import { evaluatePasswordStrength } from '../utils/passwordHash';
 
-interface LoginScreenProps {
-  onLoginSuccess: (
-    token: string,
-    profile: EmployeeProfile,
-    password?: string
-  ) => void;
+const FPT_TELECOM_LOGO_URL =
+  'https://management.mypt.vn/images/FPT_Telecom_logo.svg';
+
+export interface LoginScreenProps {
+  onLoginSuccess: (token: string, profile: EmployeeProfile) => void;
 }
 
 type AuthStep =
@@ -36,11 +57,14 @@ type AuthStep =
   | 'CHANGE_PASSWORD';
 
 /**
- * Màn hình Đăng nhập thiết kế sang trọng, tối giản theo tông màu Logo Caption Nextsu AI - FPT Telecom.
- * - Không hiển thị bất kỳ dữ liệu cột hay thông tin nội bộ nào của Sheet ra giao diện.
- * - Tích hợp đầy đủ: Xác thực Email -> Nhập mật khẩu / Tạo mật khẩu lần đầu / Đổi mật khẩu.
+ * Màn hình Đăng nhập thế hệ mới NextSu AI — Giao diện SaaS tinh gọn (Sáng/Tối + VI/EN),
+ * xác thực trực tiếp qua Google Sheet với mật khẩu băm một chiều SHA-256 kèm email.
  */
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
+  const { lang, setLang, darkMode, toggleDarkMode, tokens, t } = useAuthTheme();
+  const { width } = useWindowDimensions();
+  const isWideDesktop = width >= 1024;
+
   const [step, setStep] = useState<AuthStep>('EMAIL');
   const [email, setEmail] = useState<string>('');
   const [oldPassword, setOldPassword] = useState<string>('');
@@ -59,48 +83,90 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     null
   );
   const [avatarLoadError, setAvatarLoadError] = useState<boolean>(false);
+  const [fptLogoError, setFptLogoError] = useState<boolean>(false);
+
+  const shakeAnim = useRef(new Animated.Value(0)).current;
+
+  const triggerShake = () => {
+    shakeAnim.setValue(0);
+    Animated.sequence([
+      Animated.timing(shakeAnim, { toValue: -8, duration: 55, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: 8, duration: 55, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: -6, duration: 55, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: 6, duration: 55, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: 0, duration: 50, useNativeDriver: true }),
+    ]).start();
+  };
 
   const resetMessages = () => {
     if (errorMsg) setErrorMsg(null);
     if (successMsg) setSuccessMsg(null);
   };
 
-  // Bước 1: Kiểm tra tài khoản Email
+  const clearSensitiveInputs = () => {
+    setOldPassword('');
+    setPassword('');
+    setConfirmPassword('');
+    setShowOldPass(false);
+    setShowPass(false);
+    setShowConfirmPass(false);
+  };
+
+  const strength = useMemo(
+    () => evaluatePasswordStrength(password, confirmPassword),
+    [password, confirmPassword]
+  );
+
+  const strengthLabel = !password
+    ? t('auth.strengthEmpty')
+    : strength.strengthScore <= 1
+      ? t('auth.strengthWeak')
+      : strength.strengthScore <= 2
+        ? t('auth.strengthMedium')
+        : t('auth.strengthStrong');
+
+  const strengthColor =
+    strength.strengthScore <= 1
+      ? tokens.strengthWeak
+      : strength.strengthScore <= 2
+        ? tokens.strengthMedium
+        : tokens.strengthStrong;
+
+  // Bước 1: Kiểm tra Email nhân sự trên Sheet
   const handleCheckEmail = async () => {
+    if (loading) return;
     resetMessages();
     const trimmed = email.trim().toLowerCase();
     if (!trimmed) {
-      setErrorMsg('Vui lòng nhập địa chỉ Email của bạn.');
+      setErrorMsg(t('auth.emailRequired'));
+      triggerShake();
       return;
     }
 
+    setEmail(trimmed);
     setLoading(true);
     const res = await checkEmployeeEmail(trimmed);
     setLoading(false);
 
     if (!res.ok || !res.profile) {
       setErrorMsg(res.msg || 'Tài khoản Email không tồn tại trên hệ thống.');
+      triggerShake();
       return;
     }
 
     setCheckedProfile(res.profile);
     setAvatarLoadError(false);
-    setPassword('');
-    setConfirmPassword('');
-    setOldPassword('');
-
-    if (res.hasPassword) {
-      setStep('LOGIN_PASSWORD');
-    } else {
-      setStep('CREATE_PASSWORD');
-    }
+    clearSensitiveInputs();
+    setStep(res.hasPassword ? 'LOGIN_PASSWORD' : 'CREATE_PASSWORD');
   };
 
-  // Bước 2a: Đăng nhập
+  // Bước 2a: Đăng nhập (băm SHA-256 trước khi gửi lên Sheet)
   const handleLogin = async () => {
+    if (loading) return;
     resetMessages();
     if (!password) {
-      setErrorMsg('Vui lòng nhập mật khẩu.');
+      setErrorMsg(t('auth.passwordRequired'));
+      triggerShake();
       return;
     }
 
@@ -110,27 +176,33 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 
     if (!res.ok) {
       if (res.needCreate) {
+        clearSensitiveInputs();
         setStep('CREATE_PASSWORD');
         return;
       }
       setErrorMsg(res.msg || 'Mật khẩu không chính xác.');
+      triggerShake();
       return;
     }
 
     if (res.profile && res.token) {
-      onLoginSuccess(res.token, res.profile, password);
+      clearSensitiveInputs();
+      onLoginSuccess(res.token, res.profile);
     }
   };
 
-  // Bước 2b: Khởi tạo mật khẩu lần đầu
+  // Bước 2b: Tạo mật khẩu lần đầu (băm SHA-256 lưu lên cột H)
   const handleCreatePassword = async () => {
+    if (loading) return;
     resetMessages();
     if (password.length < 6) {
       setErrorMsg('Mật khẩu phải có tối thiểu 6 ký tự.');
+      triggerShake();
       return;
     }
     if (password !== confirmPassword) {
       setErrorMsg('Mật khẩu xác nhận không trùng khớp.');
+      triggerShake();
       return;
     }
 
@@ -139,30 +211,39 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     setLoading(false);
 
     if (!res.ok || !res.profile || !res.token) {
-      setErrorMsg(res.msg || 'Không thể thiết lập mật khẩu. Vui lòng thử lại.');
+      setErrorMsg(
+        res.msg || 'Không thể thiết lập mật khẩu. Vui lòng thử lại.'
+      );
+      triggerShake();
       return;
     }
 
-    onLoginSuccess(res.token, res.profile, password);
+    clearSensitiveInputs();
+    onLoginSuccess(res.token, res.profile);
   };
 
-  // Bước 2c: Đổi mật khẩu
+  // Bước 2c: Đổi mật khẩu ngay tại màn hình Login
   const handleChangePassword = async () => {
+    if (loading) return;
     resetMessages();
     if (!oldPassword) {
       setErrorMsg('Vui lòng nhập mật khẩu hiện tại.');
+      triggerShake();
       return;
     }
     if (password.length < 6) {
       setErrorMsg('Mật khẩu mới phải từ 6 ký tự trở lên.');
+      triggerShake();
       return;
     }
     if (password === oldPassword) {
       setErrorMsg('Mật khẩu mới phải khác mật khẩu hiện tại.');
+      triggerShake();
       return;
     }
     if (password !== confirmPassword) {
       setErrorMsg('Mật khẩu xác nhận không trùng khớp.');
+      triggerShake();
       return;
     }
 
@@ -177,52 +258,335 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 
     if (!res.ok) {
       setErrorMsg(res.msg || 'Không thể đổi mật khẩu.');
+      triggerShake();
       return;
     }
 
-    setOldPassword('');
-    setConfirmPassword('');
-    setSuccessMsg('Đổi mật khẩu thành công! Đang đăng nhập...');
+    clearSensitiveInputs();
+    setSuccessMsg(t('auth.changeSuccess'));
 
     setTimeout(() => {
       if (res.profile && res.token) {
-        onLoginSuccess(res.token, res.profile, password);
+        onLoginSuccess(res.token, res.profile);
       } else {
         setStep('LOGIN_PASSWORD');
       }
-    }, 700);
+    }, 550);
   };
 
   const handleBackToEmail = () => {
     resetMessages();
-    setPassword('');
-    setConfirmPassword('');
-    setOldPassword('');
+    clearSensitiveInputs();
     setStep('EMAIL');
   };
 
-  const openChangePasswordStep = () => {
-    resetMessages();
-    setOldPassword('');
-    setPassword('');
-    setConfirmPassword('');
-    setStep('CHANGE_PASSWORD');
+  const renderEmployeeBadge = () => {
+    if (!checkedProfile) return null;
+    const subInfo = [checkedProfile.partner, checkedProfile.block]
+      .filter(Boolean)
+      .join(' • ');
+
+    return (
+      <View
+        style={[
+          styles.employeeChip,
+          {
+            backgroundColor: tokens.muted,
+            borderColor: tokens.border,
+          },
+        ]}
+      >
+        {checkedProfile.avatar && !avatarLoadError ? (
+          <Image
+            source={{ uri: checkedProfile.avatar }}
+            style={styles.employeeAvatarImg}
+            onError={() => setAvatarLoadError(true)}
+          />
+        ) : (
+          <View
+            style={[
+              styles.employeeAvatarFallback,
+              { backgroundColor: tokens.primary },
+            ]}
+          >
+            <Text style={styles.employeeAvatarLetter}>
+              {(checkedProfile.name || email || '?').charAt(0).toUpperCase()}
+            </Text>
+          </View>
+        )}
+
+        <View style={styles.employeeMeta}>
+          <Text
+            style={[styles.employeeName, { color: tokens.foreground }]}
+            numberOfLines={1}
+          >
+            {checkedProfile.name || email}
+          </Text>
+          <Text
+            style={[styles.employeeSub, { color: tokens.mutedForeground }]}
+            numberOfLines={1}
+          >
+            {subInfo ? `${email} • ${subInfo}` : email}
+          </Text>
+        </View>
+
+        <TouchableOpacity
+          onPress={handleBackToEmail}
+          disabled={loading}
+          style={[
+            styles.changeEmailPill,
+            {
+              backgroundColor: tokens.card,
+              borderColor: tokens.border,
+            },
+          ]}
+        >
+          <ArrowLeft size={13} color={tokens.foreground} />
+          <Text
+            style={[styles.changeEmailText, { color: tokens.foreground }]}
+          >
+            {t('auth.changeEmailBtn')}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
+  const renderAlerts = () => (
+    <>
+      {Boolean(errorMsg) && (
+        <Animated.View
+          style={[
+            styles.alertBox,
+            {
+              backgroundColor: tokens.errorBg,
+              borderColor: tokens.errorBorder,
+              transform: [{ translateX: shakeAnim }],
+            },
+          ]}
+        >
+          <AlertCircle
+            size={16}
+            color={tokens.errorText}
+            style={styles.alertIcon}
+          />
+          <Text style={[styles.alertText, { color: tokens.errorText }]}>
+            {errorMsg}
+          </Text>
+        </Animated.View>
+      )}
+
+      {Boolean(successMsg) && (
+        <View
+          style={[
+            styles.alertBox,
+            {
+              backgroundColor: tokens.successBg,
+              borderColor: tokens.successBorder,
+            },
+          ]}
+        >
+          <CheckCircle2
+            size={16}
+            color={tokens.successText}
+            style={styles.alertIcon}
+          />
+          <Text style={[styles.alertText, { color: tokens.successText }]}>
+            {successMsg}
+          </Text>
+        </View>
+      )}
+    </>
+  );
+
+  const renderStrengthAndRules = () => {
+    const ruleItems = [
+      { ok: strength.minLen, label: t('auth.ruleMin6') },
+      {
+        ok: strength.hasLetter && strength.hasNumber,
+        label: t('auth.ruleLetterNum'),
+      },
+      { ok: strength.matches, label: t('auth.ruleMatches') },
+      { ok: true, label: t('auth.ruleSha256') },
+    ];
+
+    return (
+      <>
+        <View style={styles.strengthContainer}>
+          <View style={styles.strengthHeader}>
+            <Text
+              style={[
+                styles.strengthTitle,
+                { color: tokens.mutedForeground },
+              ]}
+            >
+              {t('auth.strengthTitle')}
+            </Text>
+            <Text
+              style={[
+                styles.strengthValue,
+                { color: password ? strengthColor : tokens.mutedForeground },
+              ]}
+            >
+              {strengthLabel}
+            </Text>
+          </View>
+          <View style={styles.strengthBarsRow}>
+            {[1, 2, 3, 4].map((bar) => {
+              const active = password.length > 0 && strength.strengthScore >= bar;
+              return (
+                <View
+                  key={bar}
+                  style={[
+                    styles.strengthBar,
+                    {
+                      backgroundColor: active ? strengthColor : tokens.muted,
+                    },
+                  ]}
+                />
+              );
+            })}
+          </View>
+        </View>
+
+        <View
+          style={[
+            styles.rulesGrid,
+            {
+              backgroundColor: tokens.muted,
+              borderColor: tokens.border,
+            },
+          ]}
+        >
+          {ruleItems.map((item) => (
+            <View key={item.label} style={styles.ruleRow}>
+              <Check
+                size={13}
+                color={item.ok ? tokens.success : tokens.mutedForeground}
+                style={{ opacity: item.ok ? 1 : 0.35 }}
+              />
+              <Text
+                style={[
+                  styles.ruleLabel,
+                  { color: item.ok ? tokens.success : tokens.mutedForeground },
+                ]}
+              >
+                {item.label}
+              </Text>
+            </View>
+          ))}
+        </View>
+      </>
+    );
   };
 
   return (
-    <View style={styles.screenRoot}>
-      {/* Nền sáng hiện đại với dải màu mềm mại phía trên */}
+    <View style={[styles.root, { backgroundColor: tokens.background }]}>
+      {/* Nền Gradient AI */}
       <LinearGradient
-        colors={['#E0F2FE', '#EEF2FF', '#F8FAFC']}
+        colors={tokens.backgroundGradient}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={StyleSheet.absoluteFillObject}
       />
-      <View style={styles.topDecorCircleLeft} />
-      <View style={styles.topDecorCircleRight} />
+
+      {/* Lưới SVG nơ-ron mờ */}
+      <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
+        <Svg width="100%" height="100%">
+          <Defs>
+            <Pattern
+              id="nextsu-login-grid"
+              width="48"
+              height="48"
+              patternUnits="userSpaceOnUse"
+            >
+              <Circle cx="2" cy="2" r="1.3" fill={tokens.gridDot} />
+              <Path
+                d="M 48 0 L 0 0 0 48"
+                fill="none"
+                stroke={tokens.gridLine}
+                strokeWidth="0.7"
+              />
+            </Pattern>
+          </Defs>
+          <Rect width="100%" height="100%" fill="url(#nextsu-login-grid)" />
+        </Svg>
+      </View>
+
+      {/* Vầng sáng trang trí góc */}
+      <View
+        pointerEvents="none"
+        style={[styles.glowTopLeft, { backgroundColor: tokens.glowPrimary }]}
+      />
+      <View
+        pointerEvents="none"
+        style={[styles.glowBottomRight, { backgroundColor: tokens.glowTeal }]}
+      />
+
+      {/* Thanh điều khiển Ngôn ngữ (VI | EN) & Giao diện (Sáng | Tối) */}
+      <View style={styles.topControlsRow}>
+        <View
+          accessibilityLabel={t('header.languageLabel')}
+          style={[
+            styles.langSegment,
+            {
+              backgroundColor: tokens.glassCardBg,
+              borderColor: tokens.border,
+            },
+          ]}
+        >
+          <Languages
+            size={14}
+            color={tokens.mutedForeground}
+            style={{ marginLeft: 6, marginRight: 4 }}
+          />
+          {(['vi', 'en'] as const).map((code) => {
+            const active = lang === code;
+            return (
+              <TouchableOpacity
+                key={code}
+                onPress={() => setLang(code)}
+                style={[
+                  styles.langChip,
+                  active && { backgroundColor: tokens.card },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.langChipText,
+                    {
+                      color: active ? tokens.primary : tokens.mutedForeground,
+                    },
+                  ]}
+                >
+                  {code.toUpperCase()}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        <TouchableOpacity
+          onPress={toggleDarkMode}
+          accessibilityLabel={t('header.toggleTheme')}
+          style={[
+            styles.themeToggleBtn,
+            {
+              backgroundColor: tokens.glassCardBg,
+              borderColor: tokens.border,
+            },
+          ]}
+        >
+          {darkMode ? (
+            <Sun size={16} color={tokens.foreground} />
+          ) : (
+            <Moon size={16} color={tokens.foreground} />
+          )}
+        </TouchableOpacity>
+      </View>
 
       <KeyboardAvoidingView
-        style={styles.keyboardContainer}
+        style={styles.flexOne}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <ScrollView
@@ -230,196 +594,274 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.centerContainer}>
-            {/* Khối Logo chính */}
-            <View style={styles.logoHeader}>
-              <Image
-                source={require('../../assets/logo.png')}
-                style={styles.logoImage}
-                resizeMode="contain"
-              />
-            </View>
-
-            {/* Thẻ Form Đăng nhập tối giản, tinh tế */}
-            <View style={styles.card}>
-              {/* Tiêu đề từng bước */}
-              {step === 'EMAIL' && (
-                <View style={styles.headerBlock}>
-                  <Text style={styles.titleText}>Chào mừng trở lại</Text>
-                  <Text style={styles.subtitleText}>
-                    Nhập tài khoản Email của bạn để tiếp tục
-                  </Text>
-                </View>
-              )}
-
-              {step === 'LOGIN_PASSWORD' && (
-                <View style={styles.headerBlock}>
-                  {checkedProfile?.avatar && !avatarLoadError ? (
-                    <Image
-                      source={{ uri: checkedProfile.avatar }}
-                      style={styles.loginAvatarImg}
-                      onError={() => setAvatarLoadError(true)}
-                    />
+          <View
+            style={[
+              styles.mainGrid,
+              isWideDesktop && styles.mainGridDesktop,
+            ]}
+          >
+            {isWideDesktop && (
+              <View style={styles.desktopBrandCol}>
+                <View style={styles.brandBadgesRow}>
+                  {!fptLogoError ? (
+                    Platform.OS === 'web' ? (
+                      <Image
+                        source={{ uri: FPT_TELECOM_LOGO_URL }}
+                        style={{ width: 136, height: 42 }}
+                        resizeMode="contain"
+                        onError={() => setFptLogoError(true)}
+                      />
+                    ) : (
+                      <SvgUri
+                        uri={FPT_TELECOM_LOGO_URL}
+                        width={136}
+                        height={42}
+                        onError={() => setFptLogoError(true)}
+                      />
+                    )
                   ) : (
-                    <View style={styles.loginAvatarFallback}>
-                      <Text style={styles.loginAvatarFallbackText}>
-                        {(checkedProfile?.name || email || 'U')
-                          .charAt(0)
-                          .toUpperCase()}
+                    <View
+                      style={[
+                        styles.fptPill,
+                        {
+                          backgroundColor: tokens.primarySoftBg,
+                          borderColor: tokens.primarySoftBorder,
+                        },
+                      ]}
+                    >
+                      <Sparkles size={15} color={tokens.primary} />
+                      <Text
+                        style={[styles.fptPillText, { color: tokens.primary }]}
+                      >
+                        FPT Telecom
                       </Text>
                     </View>
                   )}
-                  <Text style={styles.welcomeNameText}>
-                    Xin chào, {checkedProfile?.name || email.trim().toLowerCase()}
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.emailPill}
-                    onPress={handleBackToEmail}
-                    activeOpacity={0.75}
-                  >
-                    <Text style={styles.emailPillText} numberOfLines={1}>
-                      {email.trim().toLowerCase()}
-                    </Text>
-                    <Ionicons name="sync-outline" size={14} color="#64748B" />
-                  </TouchableOpacity>
-                </View>
-              )}
-
-              {step === 'CREATE_PASSWORD' && (
-                <View style={styles.headerBlock}>
-                  {checkedProfile?.avatar && !avatarLoadError ? (
-                    <Image
-                      source={{ uri: checkedProfile.avatar }}
-                      style={styles.loginAvatarImg}
-                      onError={() => setAvatarLoadError(true)}
-                    />
-                  ) : (
-                    <View style={styles.loginAvatarFallback}>
-                      <Text style={styles.loginAvatarFallbackText}>
-                        {(checkedProfile?.name || email || 'U')
-                          .charAt(0)
-                          .toUpperCase()}
-                      </Text>
-                    </View>
-                  )}
-                  <Text style={styles.welcomeNameText}>
-                    Xin chào, {checkedProfile?.name || email.trim().toLowerCase()}
-                  </Text>
-                  <Text style={styles.subtitleText}>
-                    Thiết lập mật khẩu cho lần đăng nhập đầu tiên của bạn
-                  </Text>
-                </View>
-              )}
-
-              {step === 'CHANGE_PASSWORD' && (
-                <View style={styles.headerBlock}>
-                  {checkedProfile?.avatar && !avatarLoadError ? (
-                    <Image
-                      source={{ uri: checkedProfile.avatar }}
-                      style={styles.loginAvatarImg}
-                      onError={() => setAvatarLoadError(true)}
-                    />
-                  ) : (
-                    <View style={styles.loginAvatarFallback}>
-                      <Text style={styles.loginAvatarFallbackText}>
-                        {(checkedProfile?.name || email || 'U')
-                          .charAt(0)
-                          .toUpperCase()}
-                      </Text>
-                    </View>
-                  )}
-                  <Text style={styles.welcomeNameText}>
-                    Xin chào, {checkedProfile?.name || email.trim().toLowerCase()}
-                  </Text>
-                  <Text style={styles.subtitleText}>
-                    Nhập mật khẩu hiện tại và mật khẩu mới để cập nhật
-                  </Text>
-                </View>
-              )}
-
-              {/* Hộp báo lỗi / thành công */}
-              {errorMsg && (
-                <View style={styles.alertError}>
-                  <Ionicons name="alert-circle" size={18} color="#EF4444" />
-                  <Text style={styles.alertErrorText}>{errorMsg}</Text>
-                </View>
-              )}
-
-              {successMsg && (
-                <View style={styles.alertSuccess}>
-                  <Ionicons name="checkmark-circle" size={18} color="#10B981" />
-                  <Text style={styles.alertSuccessText}>{successMsg}</Text>
-                </View>
-              )}
-
-              {/* ================= BƯỚC 1: NHẬP EMAIL ================= */}
-              {step === 'EMAIL' && (
-                <View style={styles.formSection}>
-                  <Text style={styles.fieldLabel}>Tài khoản Email</Text>
                   <View
                     style={[
-                      styles.inputBox,
-                      focusedField === 'email' && styles.inputBoxFocused,
+                      styles.dividerVertical,
+                      { backgroundColor: tokens.border },
+                    ]}
+                  />
+                  <View
+                    style={[
+                      styles.logoBadgeDesktop,
+                      { borderColor: tokens.border },
                     ]}
                   >
-                    <Ionicons
-                      name="mail-outline"
-                      size={20}
-                      color={focusedField === 'email' ? '#0066FF' : '#94A3B8'}
-                      style={styles.leftIcon}
+                    <Image
+                      source={require('../../assets/logo.png')}
+                      style={styles.logoImgDesktop}
+                      resizeMode="contain"
                     />
-                    <TextInput
-                      style={styles.inputControl}
-                      placeholder="ten.nhanvien@fpt.net"
-                      placeholderTextColor="#94A3B8"
-                      keyboardType="email-address"
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      value={email}
-                      onFocus={() => setFocusedField('email')}
-                      onBlur={() => setFocusedField(null)}
-                      onChangeText={(t) => {
-                        setEmail(t);
-                        resetMessages();
-                      }}
-                      onSubmitEditing={handleCheckEmail}
-                      returnKeyType="next"
-                    />
-                    {email.length > 0 && (
-                      <TouchableOpacity
-                        onPress={() => setEmail('')}
-                        style={styles.iconActionBtn}
+                  </View>
+                </View>
+
+                <Text
+                  style={[
+                    styles.desktopHeadline,
+                    { color: tokens.foreground },
+                  ]}
+                >
+                  {t('auth.brandTitle')}
+                </Text>
+                <Text
+                  style={[
+                    styles.desktopTagline,
+                    { color: tokens.mutedForeground },
+                  ]}
+                >
+                  {t('auth.brandTagline')}
+                </Text>
+              </View>
+            )}
+
+            {/* Thẻ đăng nhập kính mờ bo 20px */}
+            <View
+              style={[
+                styles.authCard,
+                {
+                  backgroundColor: tokens.glassCardBg,
+                  borderColor: tokens.glassCardBorder,
+                },
+              ]}
+            >
+              {/* Header thương hiệu + Huy hiệu SHA-256 */}
+              <View style={styles.cardBrandRow}>
+                <View style={styles.cardBrandLeft}>
+                  {!fptLogoError ? (
+                    Platform.OS === 'web' ? (
+                      <Image
+                        source={{ uri: FPT_TELECOM_LOGO_URL }}
+                        style={{ width: 92, height: 28 }}
+                        resizeMode="contain"
+                        onError={() => setFptLogoError(true)}
+                      />
+                    ) : (
+                      <SvgUri
+                        uri={FPT_TELECOM_LOGO_URL}
+                        width={92}
+                        height={28}
+                        onError={() => setFptLogoError(true)}
+                      />
+                    )
+                  ) : (
+                    <View
+                      style={[
+                        styles.mobileFptBadge,
+                        {
+                          backgroundColor: tokens.primarySoftBg,
+                          borderColor: tokens.primarySoftBorder,
+                        },
+                      ]}
+                    >
+                      <Sparkles size={12} color={tokens.primary} />
+                      <Text
+                        style={[
+                          styles.mobileFptBadgeText,
+                          { color: tokens.primary },
+                        ]}
                       >
-                        <Ionicons
-                          name="close-circle"
-                          size={18}
-                          color="#CBD5E1"
-                        />
-                      </TouchableOpacity>
-                    )}
+                        FPT Telecom
+                      </Text>
+                    </View>
+                  )}
+                  <View
+                    style={[
+                      styles.mobileLogoBox,
+                      { borderColor: tokens.border },
+                    ]}
+                  >
+                    <Image
+                      source={require('../../assets/logo.png')}
+                      style={styles.mobileLogoImg}
+                      resizeMode="contain"
+                    />
+                  </View>
+                </View>
+
+                <View
+                  style={[
+                    styles.hashSecurityBadge,
+                    {
+                      backgroundColor: tokens.muted,
+                      borderColor: tokens.border,
+                    },
+                  ]}
+                >
+                  <ShieldCheck size={12} color={tokens.success} />
+                  <Text
+                    style={[
+                      styles.hashSecurityText,
+                      { color: tokens.mutedForeground },
+                    ]}
+                  >
+                    {t('auth.hashBadge')}
+                  </Text>
+                </View>
+              </View>
+
+              {step === 'EMAIL' && (
+                <View>
+                  <Text
+                    style={[styles.stepTitle, { color: tokens.foreground }]}
+                  >
+                    {t('auth.emailTitle')}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.stepSubtitle,
+                      { color: tokens.mutedForeground },
+                    ]}
+                  >
+                    {t('auth.emailSubtitle')}
+                  </Text>
+
+                  {renderAlerts()}
+
+                  <View style={styles.fieldBlock}>
+                    <Text
+                      style={[styles.fieldLabel, { color: tokens.foreground }]}
+                    >
+                      {t('auth.emailLabel')}
+                    </Text>
+                    <View
+                      style={[
+                        styles.inputContainer,
+                        {
+                          backgroundColor: tokens.inputBg,
+                          borderColor:
+                            focusedField === 'email'
+                              ? tokens.primary
+                              : tokens.inputBorder,
+                        },
+                      ]}
+                    >
+                      <Mail size={16} color={tokens.mutedForeground} />
+                      <TextInput
+                        value={email}
+                        onChangeText={(v) => {
+                          setEmail(v);
+                          resetMessages();
+                        }}
+                        onFocus={() => setFocusedField('email')}
+                        onBlur={() => setFocusedField(null)}
+                        onSubmitEditing={handleCheckEmail}
+                        returnKeyType="next"
+                        keyboardType="email-address"
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        editable={!loading}
+                        placeholder={t('auth.emailPlaceholder')}
+                        placeholderTextColor={tokens.mutedForeground}
+                        style={[styles.textInput, { color: tokens.foreground }]}
+                      />
+                    </View>
                   </View>
 
                   <TouchableOpacity
-                    activeOpacity={0.88}
-                    disabled={loading}
                     onPress={handleCheckEmail}
-                    style={styles.primaryBtnWrap}
+                    disabled={loading}
+                    activeOpacity={0.88}
+                    style={[
+                      styles.primaryButtonWrap,
+                      { opacity: loading ? 0.65 : 1 },
+                    ]}
                   >
                     <LinearGradient
-                      colors={['#00B4FF', '#0066FF', '#6C3CE9']}
+                      colors={[tokens.primary, tokens.primaryGradientEnd]}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 0 }}
-                      style={styles.primaryBtnGradient}
+                      style={styles.primaryButtonGradient}
                     >
                       {loading ? (
-                        <ActivityIndicator color="#FFFFFF" size="small" />
+                        <>
+                          <ActivityIndicator
+                            size="small"
+                            color={tokens.primaryForeground}
+                          />
+                          <Text
+                            style={[
+                              styles.primaryButtonText,
+                              { color: tokens.primaryForeground },
+                            ]}
+                          >
+                            {t('auth.checkingBtn')}
+                          </Text>
+                        </>
                       ) : (
                         <>
-                          <Text style={styles.primaryBtnText}>Tiếp tục</Text>
-                          <Ionicons
-                            name="arrow-forward"
-                            size={18}
-                            color="#FFFFFF"
+                          <Text
+                            style={[
+                              styles.primaryButtonText,
+                              { color: tokens.primaryForeground },
+                            ]}
+                          >
+                            {t('auth.continueBtn')}
+                          </Text>
+                          <ArrowRight
+                            size={16}
+                            color={tokens.primaryForeground}
                           />
                         </>
                       )}
@@ -428,413 +870,560 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
                 </View>
               )}
 
-              {/* ================= BƯỚC 2A: ĐĂNG NHẬP ================= */}
               {step === 'LOGIN_PASSWORD' && (
-                <View style={styles.formSection}>
-                  <View style={styles.labelRow}>
-                    <Text style={styles.fieldLabel}>Mật khẩu</Text>
-                    <TouchableOpacity onPress={openChangePasswordStep}>
-                      <Text style={styles.changePassLink}>Đổi mật khẩu?</Text>
-                    </TouchableOpacity>
-                  </View>
-
-                  <View
-                    style={[
-                      styles.inputBox,
-                      focusedField === 'loginPass' && styles.inputBoxFocused,
-                    ]}
+                <View>
+                  <Text
+                    style={[styles.stepTitle, { color: tokens.foreground }]}
                   >
-                    <Ionicons
-                      name="lock-closed-outline"
-                      size={20}
-                      color={
-                        focusedField === 'loginPass' ? '#0066FF' : '#94A3B8'
-                      }
-                      style={styles.leftIcon}
-                    />
-                    <TextInput
-                      style={styles.inputControl}
-                      placeholder="Nhập mật khẩu của bạn"
-                      placeholderTextColor="#94A3B8"
-                      secureTextEntry={!showPass}
-                      autoCapitalize="none"
-                      value={password}
-                      onFocus={() => setFocusedField('loginPass')}
-                      onBlur={() => setFocusedField(null)}
-                      onChangeText={(t) => {
-                        setPassword(t);
-                        resetMessages();
-                      }}
-                      onSubmitEditing={handleLogin}
-                      returnKeyType="done"
-                    />
-                    <TouchableOpacity
-                      onPress={() => setShowPass(!showPass)}
-                      style={styles.iconActionBtn}
-                    >
-                      <Ionicons
-                        name={showPass ? 'eye-off-outline' : 'eye-outline'}
-                        size={20}
-                        color="#64748B"
-                      />
-                    </TouchableOpacity>
-                  </View>
+                    {t('auth.passwordTitle')}
+                  </Text>
+                  {renderEmployeeBadge()}
+                  {renderAlerts()}
 
-                  <TouchableOpacity
-                    activeOpacity={0.88}
-                    disabled={loading}
-                    onPress={handleLogin}
-                    style={styles.primaryBtnWrap}
-                  >
-                    <LinearGradient
-                      colors={['#00B4FF', '#0066FF', '#6C3CE9']}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 0 }}
-                      style={styles.primaryBtnGradient}
-                    >
-                      {loading ? (
-                        <ActivityIndicator color="#FFFFFF" size="small" />
-                      ) : (
-                        <Text style={styles.primaryBtnText}>Đăng nhập</Text>
-                      )}
-                    </LinearGradient>
-                  </TouchableOpacity>
-
-                  <View style={styles.bottomActionsRow}>
-                    <TouchableOpacity
-                      style={styles.secondaryActionBtn}
-                      onPress={handleBackToEmail}
-                    >
-                      <Ionicons name="arrow-back" size={16} color="#475569" />
-                      <Text style={styles.secondaryActionText}>
-                        Tài khoản khác
-                      </Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.secondaryActionBtn}
-                      onPress={openChangePasswordStep}
-                    >
-                      <Ionicons name="key-outline" size={16} color="#0066FF" />
+                  <View style={styles.fieldBlock}>
+                    <View style={styles.labelRowBetween}>
                       <Text
                         style={[
-                          styles.secondaryActionText,
-                          { color: '#0066FF' },
+                          styles.fieldLabelNoMargin,
+                          { color: tokens.foreground },
                         ]}
                       >
-                        Đổi mật khẩu
+                        {t('auth.passwordLabel')}
+                      </Text>
+                      <TouchableOpacity
+                        onPress={() => {
+                          resetMessages();
+                          clearSensitiveInputs();
+                          setStep('CHANGE_PASSWORD');
+                        }}
+                        disabled={loading}
+                      >
+                        <Text
+                          style={[
+                            styles.inlineLinkText,
+                            { color: tokens.primary },
+                          ]}
+                        >
+                          {t('auth.switchToChangePwd')}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    <View
+                      style={[
+                        styles.inputContainer,
+                        {
+                          backgroundColor: tokens.inputBg,
+                          borderColor:
+                            focusedField === 'loginPwd'
+                              ? tokens.primary
+                              : tokens.inputBorder,
+                        },
+                      ]}
+                    >
+                      <Lock size={16} color={tokens.mutedForeground} />
+                      <TextInput
+                        value={password}
+                        onChangeText={(v) => {
+                          setPassword(v);
+                          resetMessages();
+                        }}
+                        onFocus={() => setFocusedField('loginPwd')}
+                        onBlur={() => setFocusedField(null)}
+                        onSubmitEditing={handleLogin}
+                        returnKeyType="done"
+                        secureTextEntry={!showPass}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        editable={!loading}
+                        placeholder={t('auth.passwordPlaceholder')}
+                        placeholderTextColor={tokens.mutedForeground}
+                        style={[styles.textInput, { color: tokens.foreground }]}
+                      />
+                      <TouchableOpacity
+                        onPress={() => setShowPass((s) => !s)}
+                        accessibilityLabel={
+                          showPass
+                            ? t('auth.hidePassword')
+                            : t('auth.showPassword')
+                        }
+                        style={styles.eyeToggle}
+                      >
+                        {showPass ? (
+                          <EyeOff size={16} color={tokens.mutedForeground} />
+                        ) : (
+                          <Eye size={16} color={tokens.mutedForeground} />
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  <TouchableOpacity
+                    onPress={handleLogin}
+                    disabled={loading}
+                    activeOpacity={0.88}
+                    style={[
+                      styles.primaryButtonWrap,
+                      { opacity: loading ? 0.65 : 1 },
+                    ]}
+                  >
+                    <LinearGradient
+                      colors={[tokens.primary, tokens.primaryGradientEnd]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={styles.primaryButtonGradient}
+                    >
+                      {loading ? (
+                        <>
+                          <ActivityIndicator
+                            size="small"
+                            color={tokens.primaryForeground}
+                          />
+                          <Text
+                            style={[
+                              styles.primaryButtonText,
+                              { color: tokens.primaryForeground },
+                            ]}
+                          >
+                            {t('auth.signingInBtn')}
+                          </Text>
+                        </>
+                      ) : (
+                        <>
+                          <KeyRound
+                            size={16}
+                            color={tokens.primaryForeground}
+                          />
+                          <Text
+                            style={[
+                              styles.primaryButtonText,
+                              { color: tokens.primaryForeground },
+                            ]}
+                          >
+                            {t('auth.signInBtn')}
+                          </Text>
+                        </>
+                      )}
+                    </LinearGradient>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {step === 'CREATE_PASSWORD' && (
+                <View>
+                  <Text
+                    style={[styles.stepTitle, { color: tokens.foreground }]}
+                  >
+                    {t('auth.createTitle')}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.stepSubtitle,
+                      { color: tokens.mutedForeground },
+                    ]}
+                  >
+                    {t('auth.createSubtitle')}
+                  </Text>
+
+                  {renderEmployeeBadge()}
+                  {renderAlerts()}
+
+                  <View style={styles.fieldBlock}>
+                    <Text
+                      style={[styles.fieldLabel, { color: tokens.foreground }]}
+                    >
+                      {t('auth.newPasswordLabel')}
+                    </Text>
+                    <View
+                      style={[
+                        styles.inputContainer,
+                        {
+                          backgroundColor: tokens.inputBg,
+                          borderColor:
+                            focusedField === 'createPwd'
+                              ? tokens.primary
+                              : tokens.inputBorder,
+                        },
+                      ]}
+                    >
+                      <Lock size={16} color={tokens.mutedForeground} />
+                      <TextInput
+                        value={password}
+                        onChangeText={(v) => {
+                          setPassword(v);
+                          resetMessages();
+                        }}
+                        onFocus={() => setFocusedField('createPwd')}
+                        onBlur={() => setFocusedField(null)}
+                        secureTextEntry={!showPass}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        editable={!loading}
+                        placeholder={t('auth.newPasswordPlaceholder')}
+                        placeholderTextColor={tokens.mutedForeground}
+                        style={[styles.textInput, { color: tokens.foreground }]}
+                      />
+                      <TouchableOpacity
+                        onPress={() => setShowPass((s) => !s)}
+                        style={styles.eyeToggle}
+                      >
+                        {showPass ? (
+                          <EyeOff size={16} color={tokens.mutedForeground} />
+                        ) : (
+                          <Eye size={16} color={tokens.mutedForeground} />
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  <View style={styles.fieldBlockCompact}>
+                    <Text
+                      style={[styles.fieldLabel, { color: tokens.foreground }]}
+                    >
+                      {t('auth.confirmPasswordLabel')}
+                    </Text>
+                    <View
+                      style={[
+                        styles.inputContainer,
+                        {
+                          backgroundColor: tokens.inputBg,
+                          borderColor:
+                            focusedField === 'createConfirm'
+                              ? tokens.primary
+                              : tokens.inputBorder,
+                        },
+                      ]}
+                    >
+                      <Lock size={16} color={tokens.mutedForeground} />
+                      <TextInput
+                        value={confirmPassword}
+                        onChangeText={(v) => {
+                          setConfirmPassword(v);
+                          resetMessages();
+                        }}
+                        onFocus={() => setFocusedField('createConfirm')}
+                        onBlur={() => setFocusedField(null)}
+                        onSubmitEditing={handleCreatePassword}
+                        returnKeyType="done"
+                        secureTextEntry={!showConfirmPass}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        editable={!loading}
+                        placeholder={t('auth.confirmPasswordPlaceholder')}
+                        placeholderTextColor={tokens.mutedForeground}
+                        style={[styles.textInput, { color: tokens.foreground }]}
+                      />
+                      <TouchableOpacity
+                        onPress={() => setShowConfirmPass((s) => !s)}
+                        style={styles.eyeToggle}
+                      >
+                        {showConfirmPass ? (
+                          <EyeOff size={16} color={tokens.mutedForeground} />
+                        ) : (
+                          <Eye size={16} color={tokens.mutedForeground} />
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  {renderStrengthAndRules()}
+
+                  <TouchableOpacity
+                    onPress={handleCreatePassword}
+                    disabled={loading}
+                    activeOpacity={0.88}
+                    style={[
+                      styles.primaryButtonWrap,
+                      { opacity: loading ? 0.65 : 1 },
+                    ]}
+                  >
+                    <LinearGradient
+                      colors={[tokens.primary, tokens.primaryGradientEnd]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={styles.primaryButtonGradient}
+                    >
+                      {loading ? (
+                        <>
+                          <ActivityIndicator
+                            size="small"
+                            color={tokens.primaryForeground}
+                          />
+                          <Text
+                            style={[
+                              styles.primaryButtonText,
+                              { color: tokens.primaryForeground },
+                            ]}
+                          >
+                            {t('auth.creatingBtn')}
+                          </Text>
+                        </>
+                      ) : (
+                        <>
+                          <KeyRound
+                            size={16}
+                            color={tokens.primaryForeground}
+                          />
+                          <Text
+                            style={[
+                              styles.primaryButtonText,
+                              { color: tokens.primaryForeground },
+                            ]}
+                          >
+                            {t('auth.createSubmitBtn')}
+                          </Text>
+                        </>
+                      )}
+                    </LinearGradient>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {step === 'CHANGE_PASSWORD' && (
+                <View>
+                  <View style={styles.labelRowBetween}>
+                    <Text
+                      style={[styles.stepTitle, { color: tokens.foreground }]}
+                    >
+                      {t('auth.changeTitle')}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() => {
+                        resetMessages();
+                        clearSensitiveInputs();
+                        setStep('LOGIN_PASSWORD');
+                      }}
+                      disabled={loading}
+                      style={[
+                        styles.changeEmailPill,
+                        {
+                          backgroundColor: tokens.inputBg,
+                          borderColor: tokens.border,
+                        },
+                      ]}
+                    >
+                      <ArrowLeft size={13} color={tokens.foreground} />
+                      <Text
+                        style={[
+                          styles.changeEmailText,
+                          { color: tokens.foreground },
+                        ]}
+                      >
+                        {t('common.back')}
                       </Text>
                     </TouchableOpacity>
                   </View>
-                </View>
-              )}
 
-              {/* ================= BƯỚC 2B: TẠO MẬT KHẨU LẦN ĐẦU ================= */}
-              {step === 'CREATE_PASSWORD' && (
-                <View style={styles.formSection}>
-                  <Text style={styles.fieldLabel}>Mật khẩu mới</Text>
-                  <View
+                  <Text
                     style={[
-                      styles.inputBox,
-                      focusedField === 'newPass' && styles.inputBoxFocused,
+                      styles.stepSubtitle,
+                      { color: tokens.mutedForeground },
                     ]}
                   >
-                    <Ionicons
-                      name="lock-closed-outline"
-                      size={20}
-                      color={focusedField === 'newPass' ? '#0066FF' : '#94A3B8'}
-                      style={styles.leftIcon}
-                    />
-                    <TextInput
-                      style={styles.inputControl}
-                      placeholder="Tối thiểu 6 ký tự"
-                      placeholderTextColor="#94A3B8"
-                      secureTextEntry={!showPass}
-                      autoCapitalize="none"
-                      value={password}
-                      onFocus={() => setFocusedField('newPass')}
-                      onBlur={() => setFocusedField(null)}
-                      onChangeText={(t) => {
-                        setPassword(t);
-                        resetMessages();
-                      }}
-                    />
-                    <TouchableOpacity
-                      onPress={() => setShowPass(!showPass)}
-                      style={styles.iconActionBtn}
-                    >
-                      <Ionicons
-                        name={showPass ? 'eye-off-outline' : 'eye-outline'}
-                        size={20}
-                        color="#64748B"
-                      />
-                    </TouchableOpacity>
-                  </View>
-
-                  <Text style={[styles.fieldLabel, { marginTop: 14 }]}>
-                    Nhập lại mật khẩu
+                    {t('auth.changeSubtitle')}
                   </Text>
-                  <View
-                    style={[
-                      styles.inputBox,
-                      focusedField === 'confirmPass' && styles.inputBoxFocused,
-                    ]}
-                  >
-                    <Ionicons
-                      name="shield-checkmark-outline"
-                      size={20}
-                      color={
-                        focusedField === 'confirmPass' ? '#0066FF' : '#94A3B8'
-                      }
-                      style={styles.leftIcon}
-                    />
-                    <TextInput
-                      style={styles.inputControl}
-                      placeholder="Xác nhận mật khẩu mới"
-                      placeholderTextColor="#94A3B8"
-                      secureTextEntry={!showConfirmPass}
-                      autoCapitalize="none"
-                      value={confirmPassword}
-                      onFocus={() => setFocusedField('confirmPass')}
-                      onBlur={() => setFocusedField(null)}
-                      onChangeText={(t) => {
-                        setConfirmPassword(t);
-                        resetMessages();
-                      }}
-                      onSubmitEditing={handleCreatePassword}
-                      returnKeyType="done"
-                    />
-                    <TouchableOpacity
-                      onPress={() => setShowConfirmPass(!showConfirmPass)}
-                      style={styles.iconActionBtn}
-                    >
-                      <Ionicons
-                        name={
-                          showConfirmPass ? 'eye-off-outline' : 'eye-outline'
-                        }
-                        size={20}
-                        color="#64748B"
-                      />
-                    </TouchableOpacity>
-                  </View>
 
-                  <TouchableOpacity
-                    activeOpacity={0.88}
-                    disabled={loading}
-                    onPress={handleCreatePassword}
-                    style={styles.primaryBtnWrap}
-                  >
-                    <LinearGradient
-                      colors={['#00B4FF', '#0066FF', '#6C3CE9']}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 0 }}
-                      style={styles.primaryBtnGradient}
-                    >
-                      {loading ? (
-                        <ActivityIndicator color="#FFFFFF" size="small" />
-                      ) : (
-                        <Text style={styles.primaryBtnText}>
-                          Hoàn tất & Đăng nhập
-                        </Text>
-                      )}
-                    </LinearGradient>
-                  </TouchableOpacity>
+                  {renderAlerts()}
 
-                  <TouchableOpacity
-                    style={[styles.secondaryActionBtn, { marginTop: 16, alignSelf: 'center' }]}
-                    onPress={handleBackToEmail}
-                  >
-                    <Ionicons name="arrow-back" size={16} color="#475569" />
-                    <Text style={styles.secondaryActionText}>
-                      Quay lại bước nhập Email
+                  <View style={styles.fieldBlock}>
+                    <Text
+                      style={[styles.fieldLabel, { color: tokens.foreground }]}
+                    >
+                      {t('auth.currentPasswordLabel')}
                     </Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-
-              {/* ================= BƯỚC 2C: ĐỔI MẬT KHẨU ================= */}
-              {step === 'CHANGE_PASSWORD' && (
-                <View style={styles.formSection}>
-                  <Text style={styles.fieldLabel}>Mật khẩu hiện tại</Text>
-                  <View
-                    style={[
-                      styles.inputBox,
-                      focusedField === 'oldPass' && styles.inputBoxFocused,
-                    ]}
-                  >
-                    <Ionicons
-                      name="key-outline"
-                      size={20}
-                      color={focusedField === 'oldPass' ? '#0066FF' : '#94A3B8'}
-                      style={styles.leftIcon}
-                    />
-                    <TextInput
-                      style={styles.inputControl}
-                      placeholder="Nhập mật khẩu đang sử dụng"
-                      placeholderTextColor="#94A3B8"
-                      secureTextEntry={!showOldPass}
-                      autoCapitalize="none"
-                      value={oldPassword}
-                      onFocus={() => setFocusedField('oldPass')}
-                      onBlur={() => setFocusedField(null)}
-                      onChangeText={(t) => {
-                        setOldPassword(t);
-                        resetMessages();
-                      }}
-                    />
-                    <TouchableOpacity
-                      onPress={() => setShowOldPass(!showOldPass)}
-                      style={styles.iconActionBtn}
+                    <View
+                      style={[
+                        styles.inputContainer,
+                        {
+                          backgroundColor: tokens.inputBg,
+                          borderColor:
+                            focusedField === 'oldPwd'
+                              ? tokens.primary
+                              : tokens.inputBorder,
+                        },
+                      ]}
                     >
-                      <Ionicons
-                        name={showOldPass ? 'eye-off-outline' : 'eye-outline'}
-                        size={20}
-                        color="#64748B"
+                      <Lock size={16} color={tokens.mutedForeground} />
+                      <TextInput
+                        value={oldPassword}
+                        onChangeText={(v) => {
+                          setOldPassword(v);
+                          resetMessages();
+                        }}
+                        onFocus={() => setFocusedField('oldPwd')}
+                        onBlur={() => setFocusedField(null)}
+                        secureTextEntry={!showOldPass}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        editable={!loading}
+                        placeholder={t('auth.currentPasswordPlaceholder')}
+                        placeholderTextColor={tokens.mutedForeground}
+                        style={[styles.textInput, { color: tokens.foreground }]}
                       />
-                    </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => setShowOldPass((s) => !s)}
+                        style={styles.eyeToggle}
+                      >
+                        {showOldPass ? (
+                          <EyeOff size={16} color={tokens.mutedForeground} />
+                        ) : (
+                          <Eye size={16} color={tokens.mutedForeground} />
+                        )}
+                      </TouchableOpacity>
+                    </View>
                   </View>
 
-                  <Text style={[styles.fieldLabel, { marginTop: 14 }]}>
-                    Mật khẩu mới
-                  </Text>
-                  <View
-                    style={[
-                      styles.inputBox,
-                      focusedField === 'changeNewPass' &&
-                        styles.inputBoxFocused,
-                    ]}
-                  >
-                    <Ionicons
-                      name="lock-closed-outline"
-                      size={20}
-                      color={
-                        focusedField === 'changeNewPass' ? '#0066FF' : '#94A3B8'
-                      }
-                      style={styles.leftIcon}
-                    />
-                    <TextInput
-                      style={styles.inputControl}
-                      placeholder="Tối thiểu 6 ký tự"
-                      placeholderTextColor="#94A3B8"
-                      secureTextEntry={!showPass}
-                      autoCapitalize="none"
-                      value={password}
-                      onFocus={() => setFocusedField('changeNewPass')}
-                      onBlur={() => setFocusedField(null)}
-                      onChangeText={(t) => {
-                        setPassword(t);
-                        resetMessages();
-                      }}
-                    />
-                    <TouchableOpacity
-                      onPress={() => setShowPass(!showPass)}
-                      style={styles.iconActionBtn}
+                  <View style={styles.fieldBlockCompact}>
+                    <Text
+                      style={[styles.fieldLabel, { color: tokens.foreground }]}
                     >
-                      <Ionicons
-                        name={showPass ? 'eye-off-outline' : 'eye-outline'}
-                        size={20}
-                        color="#64748B"
+                      {t('auth.newPasswordLabel')}
+                    </Text>
+                    <View
+                      style={[
+                        styles.inputContainer,
+                        {
+                          backgroundColor: tokens.inputBg,
+                          borderColor:
+                            focusedField === 'newPwd'
+                              ? tokens.primary
+                              : tokens.inputBorder,
+                        },
+                      ]}
+                    >
+                      <Lock size={16} color={tokens.mutedForeground} />
+                      <TextInput
+                        value={password}
+                        onChangeText={(v) => {
+                          setPassword(v);
+                          resetMessages();
+                        }}
+                        onFocus={() => setFocusedField('newPwd')}
+                        onBlur={() => setFocusedField(null)}
+                        secureTextEntry={!showPass}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        editable={!loading}
+                        placeholder={t('auth.newPasswordPlaceholder')}
+                        placeholderTextColor={tokens.mutedForeground}
+                        style={[styles.textInput, { color: tokens.foreground }]}
                       />
-                    </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => setShowPass((s) => !s)}
+                        style={styles.eyeToggle}
+                      >
+                        {showPass ? (
+                          <EyeOff size={16} color={tokens.mutedForeground} />
+                        ) : (
+                          <Eye size={16} color={tokens.mutedForeground} />
+                        )}
+                      </TouchableOpacity>
+                    </View>
                   </View>
 
-                  <Text style={[styles.fieldLabel, { marginTop: 14 }]}>
-                    Xác nhận mật khẩu mới
-                  </Text>
-                  <View
-                    style={[
-                      styles.inputBox,
-                      focusedField === 'changeConfirmPass' &&
-                        styles.inputBoxFocused,
-                    ]}
-                  >
-                    <Ionicons
-                      name="shield-checkmark-outline"
-                      size={20}
-                      color={
-                        focusedField === 'changeConfirmPass'
-                          ? '#0066FF'
-                          : '#94A3B8'
-                      }
-                      style={styles.leftIcon}
-                    />
-                    <TextInput
-                      style={styles.inputControl}
-                      placeholder="Nhập lại mật khẩu mới"
-                      placeholderTextColor="#94A3B8"
-                      secureTextEntry={!showConfirmPass}
-                      autoCapitalize="none"
-                      value={confirmPassword}
-                      onFocus={() => setFocusedField('changeConfirmPass')}
-                      onBlur={() => setFocusedField(null)}
-                      onChangeText={(t) => {
-                        setConfirmPassword(t);
-                        resetMessages();
-                      }}
-                      onSubmitEditing={handleChangePassword}
-                      returnKeyType="done"
-                    />
-                    <TouchableOpacity
-                      onPress={() => setShowConfirmPass(!showConfirmPass)}
-                      style={styles.iconActionBtn}
+                  <View style={styles.fieldBlockCompact}>
+                    <Text
+                      style={[styles.fieldLabel, { color: tokens.foreground }]}
                     >
-                      <Ionicons
-                        name={
-                          showConfirmPass ? 'eye-off-outline' : 'eye-outline'
-                        }
-                        size={20}
-                        color="#64748B"
+                      {t('auth.confirmNewPasswordLabel')}
+                    </Text>
+                    <View
+                      style={[
+                        styles.inputContainer,
+                        {
+                          backgroundColor: tokens.inputBg,
+                          borderColor:
+                            focusedField === 'confirmNewPwd'
+                              ? tokens.primary
+                              : tokens.inputBorder,
+                        },
+                      ]}
+                    >
+                      <Lock size={16} color={tokens.mutedForeground} />
+                      <TextInput
+                        value={confirmPassword}
+                        onChangeText={(v) => {
+                          setConfirmPassword(v);
+                          resetMessages();
+                        }}
+                        onFocus={() => setFocusedField('confirmNewPwd')}
+                        onBlur={() => setFocusedField(null)}
+                        onSubmitEditing={handleChangePassword}
+                        returnKeyType="done"
+                        secureTextEntry={!showConfirmPass}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        editable={!loading}
+                        placeholder={t('auth.confirmPasswordPlaceholder')}
+                        placeholderTextColor={tokens.mutedForeground}
+                        style={[styles.textInput, { color: tokens.foreground }]}
                       />
-                    </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => setShowConfirmPass((s) => !s)}
+                        style={styles.eyeToggle}
+                      >
+                        {showConfirmPass ? (
+                          <EyeOff size={16} color={tokens.mutedForeground} />
+                        ) : (
+                          <Eye size={16} color={tokens.mutedForeground} />
+                        )}
+                      </TouchableOpacity>
+                    </View>
                   </View>
+
+                  {renderStrengthAndRules()}
 
                   <TouchableOpacity
-                    activeOpacity={0.88}
-                    disabled={loading}
                     onPress={handleChangePassword}
-                    style={styles.primaryBtnWrap}
+                    disabled={loading}
+                    activeOpacity={0.88}
+                    style={[
+                      styles.primaryButtonWrap,
+                      { opacity: loading ? 0.65 : 1 },
+                    ]}
                   >
                     <LinearGradient
-                      colors={['#00B4FF', '#0066FF', '#6C3CE9']}
+                      colors={[tokens.primary, tokens.primaryGradientEnd]}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 0 }}
-                      style={styles.primaryBtnGradient}
+                      style={styles.primaryButtonGradient}
                     >
                       {loading ? (
-                        <ActivityIndicator color="#FFFFFF" size="small" />
+                        <>
+                          <ActivityIndicator
+                            size="small"
+                            color={tokens.primaryForeground}
+                          />
+                          <Text
+                            style={[
+                              styles.primaryButtonText,
+                              { color: tokens.primaryForeground },
+                            ]}
+                          >
+                            {t('auth.changingBtn')}
+                          </Text>
+                        </>
                       ) : (
-                        <Text style={styles.primaryBtnText}>
-                          Cập nhật mật khẩu
-                        </Text>
+                        <>
+                          <KeyRound
+                            size={16}
+                            color={tokens.primaryForeground}
+                          />
+                          <Text
+                            style={[
+                              styles.primaryButtonText,
+                              { color: tokens.primaryForeground },
+                            ]}
+                          >
+                            {t('auth.changeSubmitBtn')}
+                          </Text>
+                        </>
                       )}
                     </LinearGradient>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[
-                      styles.secondaryActionBtn,
-                      { marginTop: 16, alignSelf: 'center' },
-                    ]}
-                    onPress={() => {
-                      resetMessages();
-                      setPassword('');
-                      setConfirmPassword('');
-                      setOldPassword('');
-                      setStep('LOGIN_PASSWORD');
-                    }}
-                  >
-                    <Ionicons name="arrow-back" size={16} color="#475569" />
-                    <Text style={styles.secondaryActionText}>
-                      Quay lại đăng nhập
-                    </Text>
                   </TouchableOpacity>
                 </View>
               )}
             </View>
-
-            <Text style={styles.copyrightText}>
-              © NextSu AI — FPT Telecom
-            </Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -843,259 +1432,385 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 };
 
 const styles = StyleSheet.create({
-  screenRoot: {
+  root: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    overflow: 'hidden',
   },
-  topDecorCircleLeft: {
+  flexOne: {
+    flex: 1,
+  },
+  glowTopLeft: {
     position: 'absolute',
-    top: -120,
-    left: -80,
+    top: -96,
+    left: -96,
     width: 300,
     height: 300,
-    borderRadius: 150,
-    backgroundColor: 'rgba(0, 180, 255, 0.12)',
+    borderRadius: 999,
   },
-  topDecorCircleRight: {
+  glowBottomRight: {
     position: 'absolute',
-    top: -100,
-    right: -90,
-    width: 280,
-    height: 280,
-    borderRadius: 140,
-    backgroundColor: 'rgba(108, 60, 233, 0.1)',
+    bottom: -110,
+    right: -110,
+    width: 340,
+    height: 340,
+    borderRadius: 999,
   },
-  keyboardContainer: {
-    flex: 1,
+  topControlsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    zIndex: 10,
+  },
+  langSegment: {
+    height: AUTH_METRICS.topChipHeight,
+    borderRadius: AUTH_METRICS.chipRadius,
+    borderWidth: 1,
+    paddingHorizontal: 3,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  langChip: {
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  langChipText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  themeToggleBtn: {
+    width: AUTH_METRICS.topChipHeight,
+    height: AUTH_METRICS.topChipHeight,
+    borderRadius: AUTH_METRICS.chipRadius,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   scrollContent: {
     flexGrow: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 28,
+    paddingHorizontal: 16,
+    paddingVertical: 24,
   },
-  centerContainer: {
+  mainGrid: {
     width: '100%',
-    maxWidth: 420,
+    maxWidth: AUTH_METRICS.cardMaxWidth,
     alignItems: 'center',
   },
-  logoHeader: {
-    width: '100%',
+  mainGridDesktop: {
+    maxWidth: 1020,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 40,
+  },
+  desktopBrandCol: {
+    flex: 1,
+    paddingRight: 16,
+  },
+  brandBadgesRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 22,
+    gap: 14,
+    marginBottom: 20,
   },
-  logoImage: {
-    width: 260,
-    height: 110,
-  },
-  card: {
-    width: '100%',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 28,
-    paddingHorizontal: 26,
-    paddingVertical: 30,
+  fptPill: {
+    height: 40,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    elevation: 8,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.06,
-    shadowRadius: 24,
-  },
-  headerBlock: {
+    paddingHorizontal: 14,
+    flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 22,
+    gap: 8,
   },
-  titleText: {
-    fontSize: 23,
+  fptPillText: {
+    fontSize: 14,
     fontWeight: '800',
-    color: '#0F172A',
-    textAlign: 'center',
   },
-  loginAvatarImg: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    borderWidth: 2.5,
-    borderColor: '#0066FF',
-    backgroundColor: '#E2E8F0',
-    marginBottom: 12,
+  dividerVertical: {
+    width: 1,
+    height: 28,
   },
-  loginAvatarFallback: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: '#0066FF',
+  logoBadgeDesktop: {
+    height: 42,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 12,
   },
-  loginAvatarFallbackText: {
-    color: '#FFFFFF',
-    fontSize: 28,
+  logoImgDesktop: {
+    width: 84,
+    height: 30,
+  },
+  desktopHeadline: {
+    fontSize: 32,
+    fontWeight: '800',
+    lineHeight: 40,
+  },
+  desktopTagline: {
+    marginTop: 12,
+    fontSize: 15,
+    lineHeight: 23,
+    maxWidth: 500,
+  },
+  authCard: {
+    width: '100%',
+    maxWidth: AUTH_METRICS.cardMaxWidth,
+    borderRadius: AUTH_METRICS.cardRadius,
+    borderWidth: 1,
+    padding: 22,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.14,
+    shadowRadius: 28,
+    elevation: 8,
+  },
+  cardBrandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 16,
+    flexWrap: 'wrap',
+  },
+  cardBrandLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  mobileFptBadge: {
+    height: 27,
+    borderRadius: 8,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  mobileFptBadgeText: {
+    fontSize: 11,
     fontWeight: '800',
   },
-  welcomeNameText: {
+  mobileLogoBox: {
+    height: 27,
+    paddingHorizontal: 6,
+    borderRadius: 7,
+    borderWidth: 1,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  mobileLogoImg: {
+    width: 50,
+    height: 18,
+  },
+  hashSecurityBadge: {
+    height: 25,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  hashSecurityText: {
+    fontSize: 10.5,
+    fontWeight: '700',
+  },
+  stepTitle: {
     fontSize: 20,
     fontWeight: '800',
-    color: '#0F172A',
-    textAlign: 'center',
+    letterSpacing: -0.3,
   },
-  subtitleText: {
-    fontSize: 14,
-    color: '#64748B',
-    textAlign: 'center',
-    marginTop: 6,
-    lineHeight: 20,
+  stepSubtitle: {
+    marginTop: 4,
+    fontSize: 12.5,
+    lineHeight: 18,
   },
-  emailPill: {
+  employeeChip: {
+    marginTop: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: 20,
-    marginTop: 10,
-    gap: 6,
-    maxWidth: '100%',
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
   },
-  emailPillText: {
+  employeeAvatarImg: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+  },
+  employeeAvatarFallback: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  employeeAvatarLetter: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  employeeMeta: {
+    flex: 1,
+  },
+  employeeName: {
     fontSize: 13.5,
-    fontWeight: '600',
-    color: '#1E293B',
-    flexShrink: 1,
+    fontWeight: '800',
   },
-  alertError: {
+  employeeSub: {
+    fontSize: 11,
+    marginTop: 1,
+  },
+  changeEmailPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FEF2F2',
+    gap: 4,
     borderWidth: 1,
-    borderColor: '#FECACA',
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    marginBottom: 16,
-    gap: 8,
+    borderRadius: 9,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
   },
-  alertErrorText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#DC2626',
-    fontWeight: '600',
+  changeEmailText: {
+    fontSize: 11.5,
+    fontWeight: '700',
   },
-  alertSuccess: {
+  alertBox: {
+    marginTop: 12,
     flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ECFDF5',
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    marginBottom: 16,
+    alignItems: 'flex-start',
     gap: 8,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
-  alertSuccessText: {
+  alertIcon: {
+    marginTop: 2,
+  },
+  alertText: {
     flex: 1,
-    fontSize: 13,
-    color: '#059669',
+    fontSize: 12,
     fontWeight: '600',
+    lineHeight: 17,
   },
-  formSection: {
-    width: '100%',
+  fieldBlock: {
+    marginTop: 15,
   },
-  labelRow: {
+  fieldBlockCompact: {
+    marginTop: 11,
+  },
+  labelRowBetween: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   fieldLabel: {
-    fontSize: 13,
+    fontSize: 12.5,
     fontWeight: '700',
-    color: '#334155',
-    marginBottom: 8,
+    marginBottom: 6,
   },
-  changePassLink: {
-    fontSize: 13,
+  fieldLabelNoMargin: {
+    fontSize: 12.5,
     fontWeight: '700',
-    color: '#0066FF',
-    marginBottom: 8,
   },
-  inputBox: {
+  inlineLinkText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  inputContainer: {
+    height: AUTH_METRICS.inputHeight,
+    borderRadius: AUTH_METRICS.controlRadius,
+    borderWidth: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1.5,
-    borderColor: '#E2E8F0',
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    height: 54,
+    paddingLeft: 13,
+    paddingRight: 10,
+    gap: 10,
   },
-  inputBoxFocused: {
-    backgroundColor: '#FFFFFF',
-    borderColor: '#0066FF',
-  },
-  leftIcon: {
-    marginRight: 10,
-  },
-  inputControl: {
+  textInput: {
     flex: 1,
+    fontSize: 14,
     height: '100%',
-    fontSize: 15,
-    color: '#0F172A',
-    fontWeight: '500',
   },
-  iconActionBtn: {
-    padding: 6,
+  eyeToggle: {
+    width: 30,
+    height: 30,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  primaryBtnWrap: {
-    marginTop: 22,
-    borderRadius: 16,
+  strengthContainer: {
+    marginTop: 10,
+  },
+  strengthHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 5,
+  },
+  strengthTitle: {
+    fontSize: 11,
+  },
+  strengthValue: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  strengthBarsRow: {
+    flexDirection: 'row',
+    gap: 5,
+  },
+  strengthBar: {
+    flex: 1,
+    height: 5,
+    borderRadius: 999,
+  },
+  rulesGrid: {
+    marginTop: 12,
+    borderWidth: 1,
+    borderRadius: AUTH_METRICS.controlRadius,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    rowGap: 6,
+  },
+  ruleRow: {
+    width: '50%',
+    minWidth: 145,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingRight: 5,
+  },
+  ruleLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  primaryButtonWrap: {
+    marginTop: 16,
+    borderRadius: AUTH_METRICS.controlRadius,
     overflow: 'hidden',
-    elevation: 4,
-    shadowColor: '#0066FF',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
   },
-  primaryBtnGradient: {
-    height: 54,
+  primaryButtonGradient: {
+    height: AUTH_METRICS.inputHeight,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
+    paddingHorizontal: 16,
   },
-  primaryBtnText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  bottomActionsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 18,
-    paddingTop: 14,
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-  },
-  secondaryActionBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingVertical: 4,
-  },
-  secondaryActionText: {
-    fontSize: 13.5,
-    fontWeight: '600',
-    color: '#475569',
-  },
-  copyrightText: {
-    marginTop: 22,
-    fontSize: 12,
-    color: '#94A3B8',
-    fontWeight: '600',
+  primaryButtonText: {
+    fontSize: 14,
+    fontWeight: '800',
   },
 });
