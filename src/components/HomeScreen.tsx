@@ -32,6 +32,8 @@ import {
   User,
   CreditCard,
   AlertCircle,
+  MapPin,
+  Lock,
 } from './AppIcon';
 import * as ImagePicker from 'expo-image-picker';
 import { CONFIG } from '../config';
@@ -40,6 +42,11 @@ import {
   canExecuteTaskTab,
   getCardVisibility,
 } from '../utils/cardPermissions';
+import {
+  getCurrentDeviceLocation,
+  isValidLocationString,
+} from '../services/deviceLocation';
+import { normalizePickedImageToDataUri } from '../utils/imageUploadHelper';
 import {
   callAppsScriptJsonApi,
   EmployeeProfile,
@@ -77,6 +84,7 @@ type ActiveTab =
   | 'BYPASS'
   | 'CLEAR'
   | 'MYBAE'
+  | 'TKM_XMTT'
   | 'MANUAL'
   | 'SPAM'
   | 'RESETMAC'
@@ -93,6 +101,7 @@ export interface TrackedRequest {
     | 'BYPASS'
     | 'CLEAR'
     | 'MYBAE'
+    | 'TKM_XMTT'
     | 'MANUAL'
     | 'SPAM'
     | 'RESETMAC'
@@ -253,6 +262,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         return 'clearStatus';
       case 'MYBAE':
         return 'myBaeStatus';
+      case 'TKM_XMTT':
+        return 'tkmXmttStatus';
       case 'MANUAL':
         return 'manualStatus';
       case 'SPAM':
@@ -581,6 +592,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   );
   const [attachedImageUri, setAttachedImageUri] = useState<string | null>(null);
 
+  // States cho Hoàn Tất TKM/XMTT
+  const [tkmTask, setTkmTask] = useState<'Triển Khai Mới' | 'Xác Minh Thông Tin'>(
+    'Triển Khai Mới'
+  );
+  const [xmttImage1Uri, setXmttImage1Uri] = useState<string | null>(null);
+  const [xmttImage1Base64, setXmttImage1Base64] = useState<string | null>(null);
+  const [xmttImage2Uri, setXmttImage2Uri] = useState<string | null>(null);
+  const [xmttImage2Base64, setXmttImage2Base64] = useState<string | null>(null);
+  const [xmttLocation, setXmttLocation] = useState<string>('');
+  const [xmttLocationLoading, setXmttLocationLoading] = useState<boolean>(false);
+  const [xmttLocationError, setXmttLocationError] = useState<string>('');
+
   // States cho Phân Công Tay
   const [manualType, setManualType] = useState<string>('TRIỂN KHAI');
   const [staffList, setStaffList] = useState<StaffOption[]>([]);
@@ -706,6 +729,16 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     if (tab === 'BYPASS') setSelectedCause(CONFIG.BYPASS_CAUSE2_OPTIONS[0]);
     if (tab === 'CLEAR') setSelectedCause(CONFIG.CLEAR_CAUSE1_OPTIONS[0]);
     if (tab === 'MYBAE') setSelectedCause(CONFIG.MYBAE_CAUSE1_OPTIONS[0]);
+    if (tab === 'TKM_XMTT') {
+      setTkmTask('Triển Khai Mới');
+      setXmttImage1Uri(null);
+      setXmttImage1Base64(null);
+      setXmttImage2Uri(null);
+      setXmttImage2Base64(null);
+      setXmttLocation('');
+      setXmttLocationError('');
+      setXmttLocationLoading(false);
+    }
     if (tab === 'SPAM') {
       setSelectedCause(CONFIG.OPTIMIZE_CAUSE_OPTIONS[0]);
       setOptimizeChannelType('POOL');
@@ -768,6 +801,97 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       }
     } catch {
       Alert.alert('Lỗi', 'Không thể mở trình chọn ảnh trên thiết bị.');
+    }
+  };
+
+  // Tự động lấy tọa độ GPS thiết bị cho Xác Minh Thông Tin (không cho phép chỉnh sửa)
+  const fetchXmttDeviceLocation = useCallback(async (): Promise<string> => {
+    setXmttLocationLoading(true);
+    setXmttLocationError('');
+    try {
+      const res = await getCurrentDeviceLocation();
+      if (res.ok && res.coords) {
+        setXmttLocation(res.coords);
+        setXmttLocationError('');
+        return res.coords;
+      }
+      setXmttLocation('');
+      setXmttLocationError(
+        res.error || 'Không thể tự động lấy vị trí GPS của thiết bị.'
+      );
+      return '';
+    } finally {
+      setXmttLocationLoading(false);
+    }
+  }, []);
+
+  // Tự động kích hoạt lấy Location ngay khi chọn tác vụ "Xác Minh Thông Tin"
+  useEffect(() => {
+    if (activeTab === 'TKM_XMTT' && tkmTask === 'Xác Minh Thông Tin') {
+      fetchXmttDeviceLocation();
+    } else if (activeTab === 'TKM_XMTT' && tkmTask === 'Triển Khai Mới') {
+      setXmttLocationError('');
+      setXmttLocationLoading(false);
+    }
+  }, [activeTab, tkmTask, fetchXmttDeviceLocation]);
+
+  // Chụp ảnh / chọn ảnh cho 2 ô XMTT (Ảnh 1: Nhà KHG, Ảnh 2: Biển Nhà / Trước Nhà Góc Rộng)
+  const handlePickXmttImage = async (slot: 1 | 2, fromCamera: boolean) => {
+    try {
+      if (fromCamera) {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert(
+            'Cần cấp quyền Camera',
+            'Vui lòng cho phép ứng dụng sử dụng Camera để chụp ảnh xác minh thông tin.'
+          );
+          return;
+        }
+      } else {
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert(
+            'Cần cấp quyền Thư viện',
+            'Vui lòng cho phép ứng dụng truy cập Thư viện ảnh.'
+          );
+          return;
+        }
+      }
+
+      const result = fromCamera
+        ? await ImagePicker.launchCameraAsync({
+            mediaTypes: ['images'],
+            quality: 0.55,
+            base64: true,
+            exif: false,
+          })
+        : await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ['images'],
+            quality: 0.55,
+            base64: true,
+            exif: false,
+          });
+
+      if (!result.canceled && result.assets && result.assets[0]) {
+        const asset = result.assets[0];
+        const dataUri = await normalizePickedImageToDataUri(asset, 1280, 0.72);
+        if (!dataUri) {
+          Alert.alert(
+            'Lỗi đọc hình ảnh',
+            'Không thể chuyển đổi hình ảnh đã chọn. Vui lòng chụp hoặc chọn lại ảnh khác.'
+          );
+          return;
+        }
+        if (slot === 1) {
+          setXmttImage1Uri(asset.uri || dataUri);
+          setXmttImage1Base64(dataUri);
+        } else {
+          setXmttImage2Uri(asset.uri || dataUri);
+          setXmttImage2Base64(dataUri);
+        }
+      }
+    } catch {
+      Alert.alert('Lỗi', 'Không thể mở Camera hoặc Thư viện ảnh trên thiết bị.');
     }
   };
 
@@ -851,9 +975,38 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     if (activeTab === 'MYBAE' && !attachedImageBase64) {
       Alert.alert(
         'Thiếu hình ảnh',
-        'Vui lòng chụp ảnh hoặc chọn ảnh minh chứng trước khi gửi Bypass NT Mỹ Bảo.'
+        'Vui lòng chụp ảnh hoặc chọn ảnh minh chứng trước khi gửi.'
       );
       return;
+    }
+
+    let resolvedXmttLocation = xmttLocation;
+    if (activeTab === 'TKM_XMTT' && tkmTask === 'Xác Minh Thông Tin') {
+      if (!xmttImage1Base64) {
+        Alert.alert(
+          'Thiếu Hình Ảnh 1',
+          'Vui lòng chụp hoặc chọn ảnh "Nhà KHG" trước khi gửi Xác Minh Thông Tin.'
+        );
+        return;
+      }
+      if (!xmttImage2Base64) {
+        Alert.alert(
+          'Thiếu Hình Ảnh 2',
+          'Vui lòng chụp hoặc chọn ảnh "Biển Nhà / Trước Nhà Góc Rộng" trước khi gửi Xác Minh Thông Tin.'
+        );
+        return;
+      }
+      if (!isValidLocationString(resolvedXmttLocation)) {
+        const freshLoc = await fetchXmttDeviceLocation();
+        if (!isValidLocationString(freshLoc)) {
+          Alert.alert(
+            'Chưa lấy được vị trí (Location)',
+            'Tác vụ Xác Minh Thông Tin yêu cầu tự động ghi nhận vị trí GPS của thiết bị. Vui lòng bật GPS, cấp quyền vị trí và thử lại.'
+          );
+          return;
+        }
+        resolvedXmttLocation = freshLoc;
+      }
     }
 
     if (activeTab === 'MANUAL' && !selectedStaff) {
@@ -964,6 +1117,20 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           image: attachedImageBase64,
         };
         break;
+      case 'TKM_XMTT': {
+        const isXmtt = tkmTask === 'Xác Minh Thông Tin';
+        taskLabel = `Hoàn Tất TKM/XMTT (${tkmTask})`;
+        payload = {
+          ...payload,
+          action: 'tkmXmttSubmit',
+          task: tkmTask,
+          shd: cleanShd,
+          image1: isXmtt ? xmttImage1Base64 : '',
+          image2: isXmtt ? xmttImage2Base64 : '',
+          location: isXmtt ? resolvedXmttLocation : '',
+        };
+        break;
+      }
       case 'MANUAL':
         taskLabel = `Phân Công Tay (${manualType})`;
         payload = {
@@ -1059,6 +1226,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         );
         return;
       }
+      if (rawMsg.includes('Action không hợp lệ: tkmXmtt')) {
+        Alert.alert(
+          'Cần cập nhật Code.gs',
+          'Apps Script chưa có phiên bản mới hỗ trợ Hoàn Tất TKM/XMTT. Vui lòng dán nội dung backend/Code.gs lên Google Apps Script, chạy authorizeTkmXmttDrive() một lần để cấp quyền Drive và chọn Deploy -> New version.'
+        );
+        return;
+      }
       Alert.alert(
         'Lỗi gửi yêu cầu lên Sheet',
         rawMsg ||
@@ -1136,6 +1310,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     setSelectedPort(1);
     setAttachedImageBase64(null);
     setAttachedImageUri(null);
+    setXmttImage1Uri(null);
+    setXmttImage1Base64(null);
+    setXmttImage2Uri(null);
+    setXmttImage2Base64(null);
+    setXmttLocation('');
+    setXmttLocationError('');
 
     // Gửi thành công -> Tự chuyển ngay lập tức sang tab "Yêu cầu đã gửi"
     setActiveTab('HOME');
@@ -1355,18 +1535,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                           <Text style={styles.taskCardTitle}>Bypass Công Suất</Text>
                         </TouchableOpacity>
 
-                        {/* 2. Bypass NT Mỹ Bảo */}
+                        {/* 2. Hoàn Tất TKM/XMTT */}
                         <TouchableOpacity
                           style={styles.taskCard}
                           activeOpacity={0.85}
-                          onPress={() => openTaskTab('MYBAE')}
+                          onPress={() => openTaskTab('TKM_XMTT')}
                         >
                           <View style={[styles.taskIconBox, { backgroundColor: '#F3E8FF' }]}>
                             <Camera size={26} color="#7C3AED" strokeWidth={2.2} />
                           </View>
-                          <Text style={styles.taskCardTitle}>Bypass NT Mỹ Bảo</Text>
+                          <Text style={styles.taskCardTitle}>Hoàn Tất TKM/XMTT</Text>
                           <Text style={styles.taskCardDesc}>
-                            Hệ thống tự đóng KTV chọn trường sẵn
+                            Triển Khai Mới / Xác Minh Thông Tin
                           </Text>
                         </TouchableOpacity>
 
@@ -1542,6 +1722,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   {activeTab === 'BYPASS' && 'Yêu cầu Bypass Công Suất'}
                   {activeTab === 'CLEAR' && 'Yêu cầu Clear Cls có SR'}
                   {activeTab === 'MYBAE' && 'Yêu cầu Bypass NT Mỹ Bảo'}
+                  {activeTab === 'TKM_XMTT' && 'Hoàn Tất TKM/XMTT'}
                   {activeTab === 'MANUAL' && 'Yêu cầu Phân Công Tay'}
                   {activeTab === 'SPAM' && 'Yêu cầu Tối Ưu Kênh Truyền'}
                   {activeTab === 'RESETMAC' && 'Yêu cầu Reset MAC'}
@@ -1550,6 +1731,50 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   {activeTab === 'OSP' && 'Tác vụ OSP (Quyền Admin)'}
                   {activeTab === 'SEARCH_360' && 'Tra Cứu 360 (TSTC / Hợp Đồng)'}
                 </Text>
+
+                {/* 1. Chọn Tác Vụ cho Hoàn Tất TKM/XMTT: Triển Khai Mới / Xác Minh Thông Tin */}
+                {activeTab === 'TKM_XMTT' && (
+                  <View style={{ marginBottom: 6 }}>
+                    <Text style={styles.fieldLabel}>1. TÁC VỤ *</Text>
+                    <View style={styles.tkmTaskRow}>
+                      {CONFIG.TKM_XMTT_TASK_OPTIONS.map((opt) => {
+                        const isSelected = tkmTask === opt;
+                        const isXmttOpt = opt === 'Xác Minh Thông Tin';
+                        return (
+                          <TouchableOpacity
+                            key={opt}
+                            activeOpacity={0.85}
+                            onPress={() => setTkmTask(opt)}
+                            style={[
+                              styles.tkmTaskBtn,
+                              isSelected &&
+                                (isXmttOpt
+                                  ? styles.tkmTaskBtnXmttActive
+                                  : styles.tkmTaskBtnTkmActive),
+                            ]}
+                          >
+                            <Ionicons
+                              name={
+                                isSelected ? 'radio-button-on' : 'radio-button-off'
+                              }
+                              size={16}
+                              color={isSelected ? '#FFFFFF' : '#64748B'}
+                            />
+                            <Text
+                              style={[
+                                styles.tkmTaskBtnText,
+                                isSelected && styles.tkmTaskBtnTextActive,
+                              ]}
+                              numberOfLines={2}
+                            >
+                              {opt}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+                )}
 
                 {/* 2 Tag chuyển đổi cho Phối Hợp Thu Bill: Clear Tín Hiệu & Cấp Lại Tín Hiệu */}
                 {activeTab === 'BILL_COLLECTION' && (
@@ -1699,6 +1924,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                           : 'SỐ HỢP ĐỒNG (SHD) *'
                         : activeTab === 'OSP'
                         ? 'MÃ OSP / SỐ HỢP ĐỒNG *'
+                        : activeTab === 'TKM_XMTT'
+                        ? '2. SỐ HỢP ĐỒNG (SHD) *'
                         : 'SỐ HỢP ĐỒNG (SHD) *'}
                     </Text>
                     <TextInput
@@ -1823,6 +2050,201 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                         <Text style={styles.radioOptionText}>{opt}</Text>
                       </TouchableOpacity>
                     ))}
+                  </>
+                )}
+
+                {/* Giao diện Hoàn Tất TKM/XMTT: chỉ hiện 2 ô chụp ảnh & Location tự động khi chọn "Xác Minh Thông Tin" */}
+                {activeTab === 'TKM_XMTT' && tkmTask === 'Xác Minh Thông Tin' && (
+                  <>
+                    {/* Ô chụp ảnh 1: Nhà KHG */}
+                    <View style={styles.xmttPhotoCard}>
+                      <View style={styles.xmttPhotoHeader}>
+                        <View style={styles.xmttPhotoIndexBadge}>
+                          <Text style={styles.xmttPhotoIndexText}>1</Text>
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.xmttPhotoLabel}>Nhà KHG *</Text>
+                          <Text style={styles.xmttPhotoSub}>
+                            Hình Ảnh 1 • Chụp ảnh nhà khách hàng
+                          </Text>
+                        </View>
+                        {Boolean(xmttImage1Base64) && (
+                          <View style={styles.xmttPhotoDoneBadge}>
+                            <Ionicons name="checkmark-circle" size={14} color="#15803D" />
+                            <Text style={styles.xmttPhotoDoneText}>Đã chọn</Text>
+                          </View>
+                        )}
+                      </View>
+
+                      <View style={styles.imageActionRow}>
+                        <TouchableOpacity
+                          style={styles.imagePickBtn}
+                          activeOpacity={0.8}
+                          onPress={() => handlePickXmttImage(1, true)}
+                        >
+                          <Ionicons name="camera" size={19} color="#0072FF" />
+                          <Text style={styles.imagePickBtnText}>Chụp ảnh</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={styles.imagePickBtn}
+                          activeOpacity={0.8}
+                          onPress={() => handlePickXmttImage(1, false)}
+                        >
+                          <Ionicons name="images" size={19} color="#6C3CE9" />
+                          <Text style={[styles.imagePickBtnText, { color: '#6C3CE9' }]}>
+                            Thư viện
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      {xmttImage1Uri && (
+                        <View style={styles.previewImageContainer}>
+                          <Image
+                            source={{ uri: xmttImage1Uri }}
+                            style={styles.previewImage}
+                            resizeMode="cover"
+                          />
+                          <TouchableOpacity
+                            style={styles.removeImgBtn}
+                            onPress={() => {
+                              setXmttImage1Uri(null);
+                              setXmttImage1Base64(null);
+                            }}
+                          >
+                            <Ionicons name="close-circle" size={24} color="#EF4444" />
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                    </View>
+
+                    {/* Ô chụp ảnh 2: Biển Nhà / Trước Nhà Góc Rộng */}
+                    <View style={styles.xmttPhotoCard}>
+                      <View style={styles.xmttPhotoHeader}>
+                        <View style={[styles.xmttPhotoIndexBadge, { backgroundColor: '#7C3AED' }]}>
+                          <Text style={styles.xmttPhotoIndexText}>2</Text>
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.xmttPhotoLabel}>
+                            Biển Nhà / Trước Nhà Góc Rộng *
+                          </Text>
+                          <Text style={styles.xmttPhotoSub}>
+                            Hình Ảnh 2 • Chụp biển số nhà hoặc trước nhà góc rộng
+                          </Text>
+                        </View>
+                        {Boolean(xmttImage2Base64) && (
+                          <View style={styles.xmttPhotoDoneBadge}>
+                            <Ionicons name="checkmark-circle" size={14} color="#15803D" />
+                            <Text style={styles.xmttPhotoDoneText}>Đã chọn</Text>
+                          </View>
+                        )}
+                      </View>
+
+                      <View style={styles.imageActionRow}>
+                        <TouchableOpacity
+                          style={styles.imagePickBtn}
+                          activeOpacity={0.8}
+                          onPress={() => handlePickXmttImage(2, true)}
+                        >
+                          <Ionicons name="camera" size={19} color="#0072FF" />
+                          <Text style={styles.imagePickBtnText}>Chụp ảnh</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={styles.imagePickBtn}
+                          activeOpacity={0.8}
+                          onPress={() => handlePickXmttImage(2, false)}
+                        >
+                          <Ionicons name="images" size={19} color="#6C3CE9" />
+                          <Text style={[styles.imagePickBtnText, { color: '#6C3CE9' }]}>
+                            Thư viện
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      {xmttImage2Uri && (
+                        <View style={styles.previewImageContainer}>
+                          <Image
+                            source={{ uri: xmttImage2Uri }}
+                            style={styles.previewImage}
+                            resizeMode="cover"
+                          />
+                          <TouchableOpacity
+                            style={styles.removeImgBtn}
+                            onPress={() => {
+                              setXmttImage2Uri(null);
+                              setXmttImage2Base64(null);
+                            }}
+                          >
+                            <Ionicons name="close-circle" size={24} color="#EF4444" />
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                    </View>
+
+                    {/* Ô Location: Khóa/ẩn không cho chỉnh sửa, tự động lấy tọa độ GPS thiết bị */}
+                    <View style={styles.xmttLocationSection}>
+                      <View style={styles.xmttLocationHeaderRow}>
+                        <Text style={[styles.fieldLabel, { marginTop: 0, marginBottom: 0 }]}>
+                          LOCATION (TỰ ĐỘNG THEO THIẾT BỊ) *
+                        </Text>
+                        <View style={styles.xmttLockPill}>
+                          <Lock size={11} color="#64748B" strokeWidth={2.4} />
+                          <Text style={styles.xmttLockPillText}>Không chỉnh sửa</Text>
+                        </View>
+                      </View>
+
+                      <View
+                        style={[
+                          styles.xmttLocationBox,
+                          Boolean(xmttLocationError) && styles.xmttLocationBoxError,
+                        ]}
+                      >
+                        {xmttLocationLoading ? (
+                          <View style={styles.xmttLocationValueRow}>
+                            <ActivityIndicator size="small" color="#7C3AED" />
+                            <Text style={styles.xmttLocationMutedText}>
+                              Đang tự động lấy tọa độ GPS hiện tại...
+                            </Text>
+                          </View>
+                        ) : xmttLocation ? (
+                          <View style={styles.xmttLocationValueRow}>
+                            <MapPin size={17} color="#7C3AED" strokeWidth={2.2} />
+                            <Text style={styles.xmttLocationCoordsText} numberOfLines={1}>
+                              {xmttLocation}
+                            </Text>
+                            <TouchableOpacity
+                              style={styles.xmttRetryGpsIconBtn}
+                              onPress={fetchXmttDeviceLocation}
+                              activeOpacity={0.7}
+                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            >
+                              <RefreshCw size={14} color="#475569" strokeWidth={2.2} />
+                            </TouchableOpacity>
+                          </View>
+                        ) : (
+                          <View style={styles.xmttLocationErrorCol}>
+                            <View style={styles.xmttLocationValueRow}>
+                              <AlertCircle size={17} color="#DC2626" strokeWidth={2.2} />
+                              <Text style={styles.xmttLocationErrorText}>
+                                {xmttLocationError ||
+                                  'Chưa lấy được vị trí GPS của thiết bị.'}
+                              </Text>
+                            </View>
+                            <TouchableOpacity
+                              style={styles.xmttRetryGpsBtn}
+                              onPress={fetchXmttDeviceLocation}
+                              activeOpacity={0.8}
+                            >
+                              <RefreshCw size={14} color="#7C3AED" strokeWidth={2.3} />
+                              <Text style={styles.xmttRetryGpsBtnText}>
+                                Thử lấy lại GPS tự động
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
+                      </View>
+                    </View>
                   </>
                 )}
 
@@ -4261,5 +4683,182 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     fontWeight: '600',
     color: '#065F46',
+  },
+  // Giao diện Hoàn Tất TKM/XMTT
+  tkmTaskRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  tkmTaskBtn: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    backgroundColor: '#F8FAFC',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  tkmTaskBtnTkmActive: {
+    backgroundColor: '#0072FF',
+    borderColor: '#0072FF',
+  },
+  tkmTaskBtnXmttActive: {
+    backgroundColor: '#7C3AED',
+    borderColor: '#7C3AED',
+  },
+  tkmTaskBtnText: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: '#334155',
+    flexShrink: 1,
+  },
+  tkmTaskBtnTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '800',
+  },
+  xmttPhotoCard: {
+    marginTop: 14,
+    padding: 13,
+    borderRadius: 14,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  xmttPhotoHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 10,
+  },
+  xmttPhotoIndexBadge: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#0072FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  xmttPhotoIndexText: {
+    color: '#FFFFFF',
+    fontSize: 12.5,
+    fontWeight: '800',
+  },
+  xmttPhotoLabel: {
+    fontSize: 13.5,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  xmttPhotoSub: {
+    fontSize: 11.5,
+    color: '#64748B',
+    marginTop: 1,
+  },
+  xmttPhotoDoneBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#DCFCE7',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  xmttPhotoDoneText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#15803D',
+  },
+  xmttLocationSection: {
+    marginTop: 14,
+  },
+  xmttLocationHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 8,
+  },
+  xmttLockPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  xmttLockPillText: {
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: '#64748B',
+  },
+  xmttLocationBox: {
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 12,
+    paddingHorizontal: 13,
+    paddingVertical: 12,
+    opacity: 0.9,
+  },
+  xmttLocationBoxError: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+    opacity: 1,
+  },
+  xmttLocationValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  xmttLocationMutedText: {
+    fontSize: 13,
+    color: '#64748B',
+    fontWeight: '600',
+    flex: 1,
+  },
+  xmttLocationCoordsText: {
+    flex: 1,
+    fontSize: 13.5,
+    fontWeight: '700',
+    color: '#334155',
+  },
+  xmttRetryGpsIconBtn: {
+    padding: 4,
+    borderRadius: 8,
+    backgroundColor: '#E2E8F0',
+  },
+  xmttLocationErrorCol: {
+    gap: 8,
+  },
+  xmttLocationErrorText: {
+    flex: 1,
+    fontSize: 12.5,
+    color: '#B91C1C',
+    fontWeight: '600',
+    lineHeight: 17,
+  },
+  xmttRetryGpsBtn: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#DDD6FE',
+    borderRadius: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  xmttRetryGpsBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#7C3AED',
   },
 });

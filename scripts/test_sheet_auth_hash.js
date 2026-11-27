@@ -44,6 +44,18 @@ const mockModules = {
       return crypto.createHash('sha256').update(String(data), 'utf8').digest('hex');
     },
   },
+  'react-native': {
+    Platform: { OS: 'android' },
+  },
+  'expo-location': {
+    Accuracy: { High: 5, Balanced: 3 },
+    async hasServicesEnabledAsync() { return true; },
+    async requestForegroundPermissionsAsync() { return { status: 'granted' }; },
+    async getCurrentPositionAsync() {
+      return { coords: { latitude: 10.776889, longitude: 106.700806, accuracy: 8 } };
+    },
+    async getLastKnownPositionAsync() { return null; },
+  },
 };
 
 const tsCache = new Map();
@@ -99,6 +111,8 @@ function loadTsModule(relPath) {
 const pwdHashMod = loadTsModule('src/utils/passwordHash.ts');
 const sheetAuth = loadTsModule('src/services/sheetAuthService.ts');
 const cardPermMod = loadTsModule('src/utils/cardPermissions.ts');
+const deviceLocMod = loadTsModule('src/services/deviceLocation.ts');
+const imgHelperMod = loadTsModule('src/utils/imageUploadHelper.ts');
 
 // Tạo dòng CSV mẫu đúng vị trí cột của Sheet Nhân sự (E=4: Tên, H=7: Password, K=10: Email, M=12: Status, AD=29: Role)
 function makeEmployeeCsv(rowsData) {
@@ -405,7 +419,255 @@ async function testCase(title, fn) {
     // (e) Chức danh ngoài danh sách (User thường) -> không hiện card nào
     const other = cardPermMod.getCardVisibility({ role: 'User', title: 'Nhân viên hành chính' });
     assert.equal(other.hasAnyCard, false);
+
+    // (f) Quyền truy cập tab Hoàn Tất TKM/XMTT
+    assert.equal(cardPermMod.canExecuteTaskTab('TKM_XMTT', { role: 'User', title: 'CB Kỹ thuật TKBT' }), true);
+    assert.equal(cardPermMod.canExecuteTaskTab('TKM_XMTT', { role: 'User', title: 'CB Chăm sóc & PT khách hàng' }), false);
+    assert.equal(cardPermMod.canExecuteTaskTab('TKM_XMTT', { role: 'User', title: 'Đội trưởng Triển khai bảo trì' }), true);
   });
 
-  console.log(`\n[OK] Tất cả ${passed}/7 kịch bản kiểm thử SHA-256 & Phân quyền Card đều PASS.`);
+  await testCase('8. Hoàn Tất TKM/XMTT: GPS tự động, chuẩn hóa ảnh web & kiểm thử backend Code.gs (TKM + XMTT)', async () => {
+    // 8a. Helpers Location & Image
+    assert.equal(deviceLocMod.formatLocationCoords(10.7768894, 106.7008062), '10.776889, 106.700806');
+    assert.equal(deviceLocMod.isValidLocationString('10.776889, 106.700806'), true);
+    assert.equal(deviceLocMod.isValidLocationString('999, 106.7'), false);
+    assert.equal(deviceLocMod.isValidLocationString(''), false);
+
+    const locRes = await deviceLocMod.getCurrentDeviceLocation();
+    assert.equal(locRes.ok, true);
+    assert.equal(locRes.coords, '10.776889, 106.700806');
+
+    const imgUri = await imgHelperMod.normalizePickedImageToDataUri({
+      base64: 'iVBORw0KGgo=',
+      mimeType: 'image/png',
+    });
+    assert.equal(imgUri, 'data:image/png;base64,iVBORw0KGgo=');
+
+    // 8b. Kiểm thử trực tiếp hàm submitTkmXmtt_ & tkmXmttStatus_ trong backend/Code.gs với mock Sheet + Drive
+    const vm = require('node:vm');
+    const codeGsSrc = fs.readFileSync(path.join(ROOT, 'backend/Code.gs'), 'utf8');
+    // Header chứa NFD "Tác Vụ" đúng như Sheet thực tế
+    const sheetRows = [
+      [
+        'ID',
+        'Ta\u0301c Vu\u0323',
+        'Email',
+        'MSNV',
+        'Account Inside',
+        'SHD',
+        'Hình Ảnh 1',
+        'Hình Ảnh 2',
+        'Ngày Cập Nhật',
+        'Kết Quả',
+        'Ghi Chú',
+        'Location',
+        'Address of Location',
+        'Địa chỉ KH',
+        'Đánh Giá Xác Thực',
+      ],
+      [10, 'Triển Khai Mới', 'old@fpt.net', 'NV010', 'OLDNV', 'SGH000010', '', '', new Date(), 'Hoàn tất', '', '', 'OK', 'OK', 'Đạt'],
+    ];
+
+    const makeSheetMock = () => ({
+      getSheetId: () => 1668046687,
+      getName: () => 'Hoàn Tất TKM/XMTT',
+      getLastRow: () => sheetRows.length,
+      getLastColumn: () => sheetRows[0].length,
+      getMaxRows: () => 1000,
+      insertRowsAfter: () => {},
+      getRange(r, c, nr = 1, nc = 1) {
+        return {
+          setNumberFormat() { return this; },
+          setValue(v) {
+            while (sheetRows.length < r) sheetRows.push(new Array(sheetRows[0].length).fill(''));
+            sheetRows[r - 1][c - 1] = v;
+            return this;
+          },
+          getValues() {
+            const out = [];
+            for (let i = 0; i < nr; i++) {
+              const row = sheetRows[r - 1 + i] || new Array(sheetRows[0].length).fill('');
+              out.push(row.slice(c - 1, c - 1 + nc));
+            }
+            return out;
+          },
+          getDisplayValues() {
+            return this.getValues().map((row) => row.map((v) => (v == null ? '' : String(v))));
+          },
+          createTextFinder(q) {
+            return {
+              matchEntireCell() { return this; },
+              findAll() {
+                const hits = [];
+                for (let i = 0; i < nr; i++) {
+                  const rowIdx = r + i;
+                  const val = String((sheetRows[rowIdx - 1] || [])[c - 1] || '');
+                  if (val === String(q)) hits.push({ getRow: () => rowIdx });
+                }
+                return hits;
+              },
+            };
+          },
+        };
+      },
+    });
+
+    const empRows = [
+      Array.from({ length: 31 }, (_, i) => {
+        if (i === 4) return 'Họ Tên NV';
+        if (i === 5) return 'Mã NV';
+        if (i === 6) return 'Inside Account';
+        if (i === 7) return 'Password';
+        if (i === 10) return 'Email';
+        if (i === 14) return 'Chức danh';
+        if (i === 29) return 'Roles';
+        return 'C' + i;
+      }),
+      (() => {
+        const r = new Array(31).fill('');
+        r[4] = 'Kỹ Thuật Viên A';
+        r[5] = 'NV999';
+        r[6] = 'KTVA99';
+        r[7] = 'sha256:' + 'a'.repeat(64);
+        r[10] = 'ktva@fpt.net';
+        r[14] = 'CB Kỹ thuật TKBT';
+        r[29] = 'User';
+        return r;
+      })(),
+    ];
+
+    const makeEmpSheetMock = () => ({
+      getSheetId: () => 32204814,
+      getLastRow: () => empRows.length,
+      getLastColumn: () => empRows[0].length,
+      getRange(r, c, nr = 1, nc = 1) {
+        return {
+          getValues() {
+            const out = [];
+            for (let i = 0; i < nr; i++) out.push(empRows[r - 1 + i].slice(c - 1, c - 1 + nc));
+            return out;
+          },
+          getDisplayValues() {
+            return this.getValues().map((row) => row.map((v) => String(v || '')));
+          },
+        };
+      },
+    });
+
+    let driveCounter = 0;
+    const uploadedFiles = [];
+    const scriptProps = {};
+    const sandbox = {
+      console,
+      SpreadsheetApp: {
+        openById(id) {
+          if (id === '1Sw-qSbLzvVdcW4rj7ywEZBEzKI6w5M82EQeYJUpdx7M') return { getSheets: () => [makeSheetMock()] };
+          if (id === '17QLc9SlfpPPrR-d1R2BkBxA7DmCI5ZCuhmQffP5F6pY') return { getSheets: () => [makeEmpSheetMock()] };
+          throw new Error('Unexpected sheet ' + id);
+        },
+        flush() {},
+      },
+      DriveApp: {
+        Access: { ANYONE_WITH_LINK: 'ANYONE_WITH_LINK' },
+        Permission: { VIEW: 'VIEW' },
+        getFolderById() { throw new Error('not cached'); },
+        getFoldersByName() { return { hasNext: () => false }; },
+        createFolder(name) {
+          return {
+            getId: () => 'FOLDER_XMTT_01',
+            getName: () => name,
+            isTrashed: () => false,
+            setSharing() {},
+            createFile(blob) {
+              driveCounter++;
+              const fid = 'DRV_FILE_' + driveCounter;
+              const rec = { id: fid, name: blob.name, mime: blob.mime, shared: false };
+              uploadedFiles.push(rec);
+              return {
+                getId: () => fid,
+                setSharing(acc, perm) {
+                  rec.shared = acc === 'ANYONE_WITH_LINK' && perm === 'VIEW';
+                },
+              };
+            },
+          };
+        },
+      },
+      PropertiesService: {
+        getScriptProperties: () => ({
+          getProperty: (k) => scriptProps[k] || null,
+          setProperty: (k, v) => { scriptProps[k] = v; },
+        }),
+      },
+      CacheService: {
+        getScriptCache: () => ({ get: () => null, put() {}, remove() {} }),
+      },
+      LockService: {
+        getScriptLock: () => ({ waitLock() {}, releaseLock() {} }),
+      },
+      Utilities: {
+        base64Decode: (s) => Buffer.from(s, 'base64'),
+        newBlob: (bytes, mime, name) => ({ bytes, mime, name }),
+        formatDate: () => '20261127_164500',
+      },
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(codeGsSrc, sandbox);
+
+    // Case 1: Triển Khai Mới (không cần ảnh & không có Location)
+    const rTkm = sandbox.apiTkmXmttSubmit('', 'Triển Khai Mới', 'sgh123456', '', '', '', 'ktva@fpt.net');
+    assert.equal(rTkm.ok, true);
+    assert.equal(rTkm.id, '11'); // MAX(10) + 1
+    const rowTkm = sheetRows[2];
+    assert.equal(rowTkm[0], 11);
+    assert.equal(rowTkm[1], 'Triển Khai Mới');
+    assert.equal(rowTkm[2], 'ktva@fpt.net');
+    assert.equal(rowTkm[3], 'NV999');
+    assert.equal(rowTkm[4], 'KTVA99');
+    assert.equal(rowTkm[5], 'SGH123456');
+    assert.equal(rowTkm[6], '');
+    assert.equal(rowTkm[7], '');
+    assert.equal(rowTkm[9], 'Chưa cập nhật');
+    assert.equal(rowTkm[10], '');
+    assert.equal(rowTkm[11], '');
+    assert.equal(rowTkm[12], 'Chưa đánh giá');
+    assert.equal(rowTkm[13], 'Chưa đánh giá');
+    assert.equal(rowTkm[14], 'Chưa đánh giá');
+
+    // Case 2: Xác Minh Thông Tin thiếu ảnh -> bị từ chối
+    const rXmttNoImg = sandbox.apiTkmXmttSubmit('', 'Xác Minh Thông Tin', 'SGH123456', '', '', '10.776889, 106.700806', 'ktva@fpt.net');
+    assert.equal(rXmttNoImg.ok, false);
+
+    // Case 3: Xác Minh Thông Tin đủ 2 ảnh + Location (cùng SHD nhưng khác Tác Vụ -> vẫn cho gửi!)
+    const sampleImg = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/';
+    const rXmtt = sandbox.apiTkmXmttSubmit('', 'Xác Minh Thông Tin', 'SGH123456', sampleImg, sampleImg, '10.776889, 106.700806', 'ktva@fpt.net');
+    assert.equal(rXmtt.ok, true);
+    assert.equal(rXmtt.id, '12'); // MAX(11) + 1
+    assert.equal(uploadedFiles.length, 2);
+    assert.equal(uploadedFiles[0].shared, true);
+    assert.equal(uploadedFiles[1].shared, true);
+    const rowXmtt = sheetRows[3];
+    assert.equal(rowXmtt[0], 12);
+    assert.equal(rowXmtt[1], 'Xác Minh Thông Tin');
+    assert.equal(rowXmtt[6], 'https://lh3.googleusercontent.com/d/DRV_FILE_1');
+    assert.equal(rowXmtt[7], 'https://lh3.googleusercontent.com/d/DRV_FILE_2');
+    assert.equal(rowXmtt[9], 'Chưa cập nhật');
+    assert.equal(rowXmtt[10], '');
+    assert.equal(rowXmtt[11], '10.776889, 106.700806');
+    assert.equal(rowXmtt[12], 'Chưa đánh giá');
+    assert.equal(rowXmtt[13], 'Chưa đánh giá');
+    assert.equal(rowXmtt[14], 'Chưa đánh giá');
+
+    // Case 4: Kiểm tra apiTkmXmttStatus đọc đúng Kết Quả + Ghi Chú + Đánh Giá Xác Thực
+    sheetRows[3][9] = 'Đã xử lý';
+    sheetRows[3][10] = 'Ảnh rõ nét';
+    sheetRows[3][14] = 'Khớp địa chỉ';
+    const stRes = sandbox.apiTkmXmttStatus('', '12', 'ktva@fpt.net');
+    assert.equal(stRes.ok, true);
+    assert.equal(stRes.pending, false);
+    assert.equal(stRes.status, 'Đã xử lý');
+    assert.equal(stRes.note, 'Ảnh rõ nét • Đánh giá xác thực: Khớp địa chỉ');
+  });
+
+  console.log(`\n[OK] Tất cả ${passed}/8 kịch bản kiểm thử SHA-256, Phân quyền Card & Hoàn Tất TKM/XMTT đều PASS.`);
 })();

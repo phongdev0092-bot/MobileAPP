@@ -79,6 +79,22 @@ const MYBAE = {
   ROW_HEIGHT: 140
 };
 
+// Sheet nhận yêu cầu Hoàn Tất TKM/XMTT (Triển Khai Mới / Xác Minh Thông Tin)
+const TKM_XMTT = {
+  SHEET_ID: '1Sw-qSbLzvVdcW4rj7ywEZBEzKI6w5M82EQeYJUpdx7M',
+  GID: 1668046687,
+  HEADER_ROW: 1,
+  TASK_OPTIONS: ['Triển Khai Mới', 'Xác Minh Thông Tin'],
+  TASK_TKM: 'Triển Khai Mới',
+  TASK_XMTT: 'Xác Minh Thông Tin',
+  RESULT_NEW: 'Chưa cập nhật',
+  NOTE_NEW: '',
+  EVAL_NEW: 'Chưa đánh giá',
+  DATE_FMT: 'dd/MM/yyyy HH:mm:ss',
+  MAX_IMG_CHARS: 6000000,
+  DRIVE_FOLDER_NAME: 'NextSu_XMTT_Images'
+};
+
 // Sheet nhận yêu cầu Phân Công Tay
 const MANUAL = {
   SHEET_ID: '1Sw-qSbLzvVdcW4rj7ywEZBEzKI6w5M82EQeYJUpdx7M',
@@ -209,6 +225,8 @@ function handleJsonApi_(req) {
     case 'clearStatus':      res = apiClearStatus(req.token, req.id, req.email); break;
     case 'myBaeSubmit':      res = apiMyBaeSubmit(req.token, req.shd, req.cause1, req.image, req.email); break;
     case 'myBaeStatus':      res = apiMyBaeStatus(req.token, req.id, req.email); break;
+    case 'tkmXmttSubmit':    res = apiTkmXmttSubmit(req.token, req.task, req.shd, req.image1, req.image2, req.location, req.email); break;
+    case 'tkmXmttStatus':    res = apiTkmXmttStatus(req.token, req.id, req.email); break;
     case 'manualOptions':    res = apiManualOptions(req.token, req.email); break;
     case 'manualSubmit':     res = apiManualSubmit(req.token, req.items, req.email); break;
     case 'manualStatus':     res = apiManualStatus(req.token, req.id, req.email); break;
@@ -2399,6 +2417,306 @@ function billSignalStatus_(kind, token, id, shd, emailHint) {
       if (shd && String(shds[i][0]).normalize('NFC').trim().toUpperCase() !== shd) continue;
       const st = String(res[i][0] || '').normalize('NFC').trim();
       return { ok: true, status: st, pending: isBillPending_(st) };
+    }
+    return { ok: false, notFound: true, msg: 'Không tìm thấy yêu cầu #' + id + '.' };
+  } catch (e) {
+    return serverError_(e);
+  }
+}
+
+/* ===================== Hoàn Tất TKM/XMTT (Triển Khai Mới / Xác Minh Thông Tin) ===================== */
+
+/**
+ * Hàm chạy 1 lần trong Google Apps Script Editor để cấp quyền truy cập Sheet + Google Drive
+ * (phục vụ lưu Hình Ảnh 1 & Hình Ảnh 2 dưới dạng đường dẫn URL công khai cho Web).
+ */
+function authorizeTkmXmttDrive() {
+  const sh = getTkmXmttSheet_();
+  const folder = getTkmImageFolder_();
+  return {
+    ok: true,
+    sheetName: sh.getName(),
+    folderId: folder.getId(),
+    folderName: folder.getName()
+  };
+}
+
+function getTkmXmttSheet_() {
+  const ss = SpreadsheetApp.openById(TKM_XMTT.SHEET_ID);
+  const sh = ss.getSheets().filter(function (s) { return s.getSheetId() === TKM_XMTT.GID; })[0];
+  if (!sh) throw new Error('Không tìm thấy tab Hoàn Tất TKM/XMTT (gid=' + TKM_XMTT.GID + ')');
+  return sh;
+}
+
+function getTkmImageFolder_() {
+  const props = PropertiesService.getScriptProperties();
+  const savedId = props.getProperty('TKM_XMTT_FOLDER_ID');
+  if (savedId) {
+    try {
+      const existing = DriveApp.getFolderById(savedId);
+      if (existing && !existing.isTrashed()) return existing;
+    } catch (e) {}
+  }
+  const it = DriveApp.getFoldersByName(TKM_XMTT.DRIVE_FOLDER_NAME);
+  const folder = it.hasNext() ? it.next() : DriveApp.createFolder(TKM_XMTT.DRIVE_FOLDER_NAME);
+  try {
+    folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  } catch (e) {}
+  props.setProperty('TKM_XMTT_FOLDER_ID', folder.getId());
+  return folder;
+}
+
+/**
+ * Lưu ảnh base64 lên Google Drive công khai (ANYONE_WITH_LINK / VIEW) và trả về URL ảnh trực tiếp
+ * (`https://lh3.googleusercontent.com/d/<FILE_ID>`) để phục vụ hiển thị trực tiếp trên Web (<img src>).
+ */
+function uploadTkmImageToDrive_(dataUri, shd, slotTag) {
+  const m = String(dataUri || '').match(/^data:image\/(jpeg|jpg|png|webp);base64,([A-Za-z0-9+\/=\r\n]+)$/i);
+  if (!m) throw new Error('Định dạng hình ảnh không hợp lệ (' + slotTag + ').');
+  const rawExt = m[1].toLowerCase();
+  const ext = rawExt === 'jpeg' ? 'jpg' : rawExt;
+  const mime = rawExt === 'jpg' ? 'image/jpeg' : ('image/' + rawExt);
+  const b64 = m[2].replace(/\s+/g, '');
+  const bytes = Utilities.base64Decode(b64);
+  const safeShd = String(shd || 'SHD').replace(/[^A-Z0-9_-]/gi, '_');
+  const ts = Utilities.formatDate(new Date(), 'Asia/Ho_Chi_Minh', 'yyyyMMdd_HHmmss');
+  const fileName = safeShd + '_' + slotTag + '_' + ts + '.' + ext;
+
+  const folder = getTkmImageFolder_();
+  const blob = Utilities.newBlob(bytes, mime, fileName);
+  const file = folder.createFile(blob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  return 'https://lh3.googleusercontent.com/d/' + file.getId();
+}
+
+/**
+ * Khớp tiêu đề cột linh hoạt (hỗ trợ cả NFC lẫn NFD như "Tác Vụ" và fallback không dấu)
+ */
+function tkmColMap_(sh, headerRow, names) {
+  const rawHeaders = sh.getRange(headerRow, 1, 1, sh.getLastColumn()).getValues()[0];
+  const nfcHeaders = rawHeaders.map(normHeader_);
+  const asciiHeaders = rawHeaders.map(billHdr_);
+  const c = {};
+  names.forEach(function (n) {
+    let i = nfcHeaders.indexOf(normHeader_(n));
+    if (i < 0) i = asciiHeaders.indexOf(billHdr_(n));
+    if (i < 0) throw new Error('Sheet Hoàn Tất TKM/XMTT thiếu cột "' + n + '"');
+    c[n] = i;
+  });
+  return c;
+}
+
+function isValidLocationCoord_(loc) {
+  const m = String(loc || '').trim().match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
+  if (!m) return false;
+  const lat = Number(m[1]);
+  const lng = Number(m[2]);
+  return isFinite(lat) && isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+}
+
+function apiTkmXmttSubmit(token, task, shd, image1, image2, location, emailHint) {
+  return submitTkmXmtt_(token, task, shd, image1, image2, location, emailHint);
+}
+
+function apiTkmXmttStatus(token, id, emailHint) {
+  return tkmXmttStatus_(token, id, emailHint);
+}
+
+function submitTkmXmtt_(token, task, shd, image1, image2, location, emailHint) {
+  const lock = LockService.getScriptLock();
+  let locked = false;
+  try {
+    const s = requireSession_(token, emailHint);
+    if (!s) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
+    const email = s.email;
+    const emp = s.emp;
+    if (!emp.profile.code) return { ok: false, msg: 'Tài khoản chưa có Mã NV trong danh sách.' };
+    if (!emp.profile.inside) return { ok: false, msg: 'Tài khoản chưa có Inside Account trong danh sách.' };
+
+    task = String(task || '').normalize('NFC').replace(/\s+/g, ' ').trim();
+    if (TKM_XMTT.TASK_OPTIONS.indexOf(task) < 0) {
+      return { ok: false, msg: 'Tác vụ không hợp lệ. Vui lòng chọn Triển Khai Mới hoặc Xác Minh Thông Tin.' };
+    }
+
+    shd = String(shd || '').trim().toUpperCase();
+    if (!/^[A-Z0-9][A-Z0-9._\-\/]{3,29}$/.test(shd)) {
+      return { ok: false, msg: 'SHD không hợp lệ.' };
+    }
+
+    const isXmtt = task === TKM_XMTT.TASK_XMTT;
+    let img1Data = '';
+    let img2Data = '';
+    let cleanLocation = '';
+
+    if (isXmtt) {
+      img1Data = String(image1 || '').trim();
+      img2Data = String(image2 || '').trim();
+      if (!/^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+\/=\r\n]+$/i.test(img1Data)) {
+        return { ok: false, msg: 'Vui lòng chụp hoặc đính kèm Hình Ảnh 1 (Nhà KHG) hợp lệ.' };
+      }
+      if (!/^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+\/=\r\n]+$/i.test(img2Data)) {
+        return { ok: false, msg: 'Vui lòng chụp hoặc đính kèm Hình Ảnh 2 (Biển Nhà / Trước Nhà Góc Rộng) hợp lệ.' };
+      }
+      if (img1Data.length > TKM_XMTT.MAX_IMG_CHARS || img2Data.length > TKM_XMTT.MAX_IMG_CHARS) {
+        return { ok: false, msg: 'Kích thước hình ảnh quá lớn, vui lòng chụp lại ảnh nhỏ hơn.' };
+      }
+      cleanLocation = String(location || '').trim();
+      if (!isValidLocationCoord_(cleanLocation)) {
+        return { ok: false, msg: 'Vị trí thiết bị (Location) không hợp lệ. Vui lòng bật GPS và thử lại.' };
+      }
+    }
+
+    lock.waitLock(25000);
+    locked = true;
+
+    const sh = getTkmXmttSheet_();
+    const H = TKM_XMTT.HEADER_ROW;
+    const names = [
+      'ID',
+      'Tác Vụ',
+      'Email',
+      'MSNV',
+      'Account Inside',
+      'SHD',
+      'Hình Ảnh 1',
+      'Hình Ảnh 2',
+      'Ngày Cập Nhật',
+      'Kết Quả',
+      'Ghi Chú',
+      'Location',
+      'Address of Location',
+      'Địa chỉ KH',
+      'Đánh Giá Xác Thực'
+    ];
+    const c = tkmColMap_(sh, H, names);
+
+    const lastRow = sh.getLastRow();
+    const lastCol = sh.getLastColumn();
+    let maxId = 0;
+    let lastDataRow = H;
+    if (lastRow > H) {
+      const n = lastRow - H;
+      const first = H + 1;
+      const ids = sh.getRange(first, c['ID'] + 1, n, 1).getValues();
+      const shds = sh.getRange(first, c['SHD'] + 1, n, 1).getDisplayValues();
+      for (let i = 0; i < n; i++) {
+        const v = parseInt(ids[i][0], 10);
+        if (!isNaN(v) && v > maxId) maxId = v;
+        if (ids[i][0] !== '' || String(shds[i][0]).trim() !== '') lastDataRow = first + i;
+      }
+
+      const hits = sh.getRange(first, c['SHD'] + 1, n, 1).createTextFinder(shd).matchEntireCell(true).findAll();
+      for (let k = 0; k < hits.length && k < 20; k++) {
+        const rv = sh.getRange(hits[k].getRow(), 1, 1, lastCol).getDisplayValues()[0];
+        const rowTask = String(rv[c['Tác Vụ']] || '').normalize('NFC').replace(/\s+/g, ' ').trim();
+        if (rowTask === task && isPendingStatus_(rv[c['Kết Quả']])) {
+          if (normEmail_(rv[c['Email']]) === email) {
+            return { ok: true, resumed: true, id: String(rv[c['ID']]), shd: shd, task: task };
+          }
+          return { ok: false, msg: 'SHD ' + shd + ' (' + task + ') đã được gửi và đang chờ xử lý.' };
+        }
+      }
+    }
+
+    let img1Url = '';
+    let img2Url = '';
+    if (isXmtt) {
+      try {
+        img1Url = uploadTkmImageToDrive_(img1Data, shd, 'NhaKHG');
+        img2Url = uploadTkmImageToDrive_(img2Data, shd, 'BienNha');
+      } catch (driveErr) {
+        console.error(driveErr);
+        const errMsg = String(driveErr && driveErr.message ? driveErr.message : driveErr);
+        if (errMsg.toLowerCase().indexOf('permission') >= 0 || errMsg.toLowerCase().indexOf('driveapp') >= 0 || errMsg.toLowerCase().indexOf('auth') >= 0) {
+          return {
+            ok: false,
+            msg: 'Apps Script chưa được cấp quyền Google Drive để lưu hình ảnh web. Vui lòng chạy hàm authorizeTkmXmttDrive() một lần trong Apps Script Editor rồi Deploy bản mới.'
+          };
+        }
+        return { ok: false, msg: 'Lỗi tải hình ảnh lên hệ thống web: ' + errMsg };
+      }
+    }
+
+    const newId = maxId + 1;
+    const newRow = lastDataRow + 1;
+    if (newRow > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), newRow - sh.getMaxRows());
+
+    const vals = {
+      'ID': newId,
+      'Tác Vụ': task,
+      'Email': email,
+      'MSNV': emp.profile.code,
+      'Account Inside': emp.profile.inside,
+      'SHD': shd,
+      'Hình Ảnh 1': img1Url,
+      'Hình Ảnh 2': img2Url,
+      'Ngày Cập Nhật': new Date(),
+      'Kết Quả': TKM_XMTT.RESULT_NEW,
+      'Ghi Chú': TKM_XMTT.NOTE_NEW,
+      'Location': cleanLocation,
+      'Address of Location': TKM_XMTT.EVAL_NEW,
+      'Địa chỉ KH': TKM_XMTT.EVAL_NEW,
+      'Đánh Giá Xác Thực': TKM_XMTT.EVAL_NEW
+    };
+
+    const TEXT_COLS = ['MSNV', 'SHD', 'Account Inside', 'Location'];
+    Object.keys(vals).forEach(function (colName) {
+      const cell = sh.getRange(newRow, c[colName] + 1);
+      if (TEXT_COLS.indexOf(colName) >= 0) cell.setNumberFormat('@');
+      if (colName === 'Ngày Cập Nhật') cell.setNumberFormat(TKM_XMTT.DATE_FMT);
+      cell.setValue(vals[colName]);
+    });
+    SpreadsheetApp.flush();
+
+    return {
+      ok: true,
+      id: String(newId),
+      shd: shd,
+      task: task,
+      image1Url: img1Url,
+      image2Url: img2Url
+    };
+  } catch (e) {
+    console.error(e);
+    return { ok: false, msg: 'Lỗi hệ thống: ' + (e && e.message ? e.message : e) };
+  } finally {
+    if (locked) { try { lock.releaseLock(); } catch (x) {} }
+  }
+}
+
+function tkmXmttStatus_(token, id, emailHint) {
+  try {
+    const email = sessionEmailFast_(token, emailHint);
+    if (!email) return { ok: false, expired: true, msg: 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.' };
+    id = String(id || '').trim();
+    if (!/^\d{1,12}$/.test(id)) return { ok: false, notFound: true, msg: 'Mã yêu cầu không hợp lệ.' };
+
+    const sh = getTkmXmttSheet_();
+    const H = TKM_XMTT.HEADER_ROW;
+    const c = tkmColMap_(sh, H, ['ID', 'Email', 'Kết Quả', 'Ghi Chú', 'Đánh Giá Xác Thực']);
+    const lastRow = sh.getLastRow();
+    const lastCol = sh.getLastColumn();
+    if (lastRow <= H) return { ok: false, notFound: true, msg: 'Không tìm thấy yêu cầu #' + id + '.' };
+
+    const hits = sh.getRange(H + 1, c['ID'] + 1, lastRow - H, 1).createTextFinder(id).matchEntireCell(true).findAll();
+    for (let i = 0; i < hits.length && i < 5; i++) {
+      const rv = sh.getRange(hits[i].getRow(), 1, 1, lastCol).getDisplayValues()[0];
+      if (normEmail_(rv[c['Email']]) === email) {
+        const result = String(rv[c['Kết Quả']] || '').normalize('NFC').trim();
+        const ghiChu = String(rv[c['Ghi Chú']] || '').normalize('NFC').trim();
+        const danhGia = String(rv[c['Đánh Giá Xác Thực']] || '').normalize('NFC').trim();
+        const notes = [];
+        if (ghiChu) notes.push(ghiChu);
+        if (danhGia && normHeader_(danhGia) !== normHeader_(TKM_XMTT.EVAL_NEW)) {
+          notes.push('Đánh giá xác thực: ' + danhGia);
+        }
+        return {
+          ok: true,
+          status: result,
+          note: notes.join(' • '),
+          pending: isPendingStatus_(result)
+        };
+      }
     }
     return { ok: false, notFound: true, msg: 'Không tìm thấy yêu cầu #' + id + '.' };
   } catch (e) {

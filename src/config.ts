@@ -57,6 +57,10 @@ export const CONFIG = {
     'Khách hàng không sử dụng wifi',
     'Điện thoại KTV không hỗ trợ đo kiểm',
   ],
+  // Cấu hình Tác vụ "Hoàn Tất TKM/XMTT" (thay thế Bypass NT Mỹ Bảo)
+  TKM_XMTT_SHEET_ID: '1Sw-qSbLzvVdcW4rj7ywEZBEzKI6w5M82EQeYJUpdx7M',
+  TKM_XMTT_SHEET_GID: 1668046687,
+  TKM_XMTT_TASK_OPTIONS: ['Triển Khai Mới', 'Xác Minh Thông Tin'] as const,
   MANUAL_TYPE_OPTIONS: ['TRIỂN KHAI', 'BẢO TRÌ'],
 
   // Cấu hình Tác vụ "Tối Ưu Kênh Truyền" (thay thế SpamPool Ưu Tiên)

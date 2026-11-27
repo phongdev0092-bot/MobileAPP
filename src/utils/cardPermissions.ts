@@ -3,7 +3,7 @@
  * và quyền Admin (cột AD / Admin mặc định):
  *
  * 1. "CB Kỹ thuật TKBT" hoặc "CB Hỗ trợ kỹ thuật tại nhà KH":
- *    -> Thấy 8 card kỹ thuật: Bypass Công Suất, Bypass NT Mỹ Bảo, Phân Công Tay,
+ *    -> Thấy 8 card kỹ thuật: Bypass Công Suất, Hoàn Tất TKM/XMTT, Phân Công Tay,
  *       Tối Ưu Kênh Truyền, Reset MAC, Thu Hồi Port, Tra Cứu 360, Kiểm Tra Mạng.
  * 2. "CB Chăm sóc & PT khách hàng":
  *    -> Chỉ thấy Phối Hợp Thu Bill (Clear Tín Hiệu / Cấp Lại Tín Hiệu) và Phối Hợp SOS (Đang phát triển).
@@ -83,6 +83,7 @@ export function canExecuteTaskTab(
     case 'BYPASS':
     case 'CLEAR':
     case 'MYBAE':
+    case 'TKM_XMTT':
     case 'MANUAL':
     case 'SPAM':
     case 'RESETMAC':

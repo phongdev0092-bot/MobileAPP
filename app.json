@@ -16,8 +16,9 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.fpttelecom.fptportal",
       "infoPlist": {
-        "NSCameraUsageDescription": "Ứng dụng cần quyền truy cập Camera để chụp ảnh minh chứng công việc (ví dụ: Bypass MyBAE).",
-        "NSPhotoLibraryUsageDescription": "Ứng dụng cần quyền truy cập Thư viện ảnh để đính kèm hình ảnh báo cáo công việc."
+        "NSCameraUsageDescription": "Ứng dụng cần quyền truy cập Camera để chụp ảnh minh chứng công việc (ví dụ: Hoàn Tất TKM/XMTT).",
+        "NSPhotoLibraryUsageDescription": "Ứng dụng cần quyền truy cập Thư viện ảnh để đính kèm hình ảnh báo cáo công việc.",
+        "NSLocationWhenInUseUsageDescription": "Ứng dụng cần quyền truy cập Vị trí GPS để tự động ghi nhận tọa độ thực tế khi thực hiện Xác Minh Thông Tin."
       }
     },
     "android": {
